@@ -52,6 +52,11 @@ def train(total_steps=500_000, seed=0):
         if done or ep_step >= ep_len_ctrl:
             ep += 1
             print(f"ep {ep:04d} | steps {t:7d} | ret {ep_ret:8.2f} | EP={env.ep} | alpha={stats['alpha'] if t>=start_ep_steps else '-'}")
+
+            # add rolling average for determining performance
+            avg_ret = 0.95 * avg_ret + 0.05 * ep_ret if ep > 1 else ep_ret
+            print(f"ep {ep:04d} | ret {ep_ret:8.2f} | avg {avg_ret:8.2f}")
+
             s = env.reset()  # random EP mode next episode
             ep_step = 0
             ep_ret  = 0.0
