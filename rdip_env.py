@@ -187,3 +187,5 @@ class RDIPEnv:
         Rbd  = math.exp(-0.02*abs(bd))
         return float(Ru * Rth * Ra * Rb * Rthd * Rad * Rbd)
 
+
+

@@ -89,3 +89,4 @@ def train(total_steps=500_000, seed=0):
 
 if __name__ == "__main__":
     train(total_steps=1_000_000, seed=42)
+
