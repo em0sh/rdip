@@ -82,6 +82,9 @@ class Replay:
             torch.as_tensor(self.S2[idx]).to(DEVICE),
             torch.as_tensor(self.D[idx]).to(DEVICE),
         )
+    
+    def __len__(self):
+        return self.size if self.full else self.ptr
 
 class TQC:
     def __init__(self, obs_dim=10, act_limit=50.0, gamma=0.99, lr=3e-4,
