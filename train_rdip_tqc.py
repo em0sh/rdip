@@ -132,10 +132,13 @@ def train(total_steps=5_000_000, seed=0):
                     mode_return_totals[mode] += ep_return
                     total_eps = sum(mode_counts.values())
 
+                    per_env_time = ep_time / num_envs
+                    avg_per_env_time = avg_ep_time / num_envs if num_envs else avg_ep_time
+
                     print(
                         f"ep {ep:04d} | steps {total_steps:7d} | ret {ep_return:8.2f} | ema {ema_str} | "
                         f"H {entropy_str} | EP={mode} | alpha={alpha_str} | "
-                        f"dt/ep {ep_time:6.2f}s | avg_dt/ep {avg_ep_time:6.2f}s"
+                        f"dt_env {per_env_time:6.2f}s | avg_dt_env {avg_per_env_time:6.2f}s"
                     )
 
                     writer.add_scalar("episode/return", ep_return, ep)
@@ -145,6 +148,8 @@ def train(total_steps=5_000_000, seed=0):
                     writer.add_scalar(f"episode/return_mode_{mode}", ep_return, ep)
                     writer.add_scalar("episode/duration", ep_time, ep)
                     writer.add_scalar("episode/duration_avg", avg_ep_time, ep)
+                    writer.add_scalar("episode/duration_per_env", per_env_time, ep)
+                    writer.add_scalar("episode/duration_per_env_avg", avg_per_env_time, ep)
                     for m in range(4):
                         if total_eps:
                             writer.add_scalar(f"episode/mode_pct_{m}", mode_counts[m] / total_eps, ep)
