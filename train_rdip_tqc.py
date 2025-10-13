@@ -5,6 +5,7 @@ from rdip_env import RDIPEnv
 from tqc import TQC, Replay, DEVICE
 import torch
 from torch.utils.tensorboard import SummaryWriter
+from pathlib import Path
 
 def train(total_steps=500_000, seed=0):
     print(f"[train] Device: {DEVICE}")
@@ -12,27 +13,38 @@ def train(total_steps=500_000, seed=0):
     algo = TQC(obs_dim=10, act_limit=env.max_action, target_entropy=-1.0)  # 1D action
     buf = Replay(size=200_000)
     run_name = f"TQC_{time.strftime('%Y%m%d-%H%M%S')}_seed{seed}"
-    writer = SummaryWriter(log_dir=f"runs/{run_name}")
-    print(f"[train] Logging TensorBoard data to runs/{run_name}")
+    run_dir = Path("runs") / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    writer = SummaryWriter(log_dir=str(run_dir))
+    print(f"[train] Logging TensorBoard data to {run_dir}")
 
     start_ep_steps = 10000  # pure exploration warmup
     batch = 512
     updates_per_step = 1
     ep_len_ctrl = int(env.T / env.control_dt)  # 10s / 0.01s = 1000 steps/episode
 
-    s = env.reset(ep_mode=0)
+    s = env.reset(ep_mode=np.random.randint(0, 4))
     ep_step = 0
     ep_ret = 0.0
     ep = 0
     ema_ret = None
     ema_beta = 0.05  # smoothing factor for EMA of episode returns
     stats = None
+    episode_times = []
+    episode_states = []
+    episode_actions = []
+    episode_rewards = []
+    episode_mode = env.ep
+    episode_snapshots = {}
 
     try:
         for t in range(1, total_steps+1):
-            # sample new EP mode at episode boundary to learn all transitions
             if ep_step == 0:
-                env.ep = np.random.randint(0,4)
+                episode_times = []
+                episode_states = []
+                episode_actions = []
+                episode_rewards = []
+                episode_mode = env.ep
 
             # action
             if t < start_ep_steps:
@@ -45,6 +57,11 @@ def train(total_steps=500_000, seed=0):
             s2, base_r, done, _ = env.step(a[0])
             u_cost = np.exp(-0.005*abs(a[0]))
             r = float(u_cost) * base_r
+
+            episode_times.append(env.t)
+            episode_states.append(env.x.copy())
+            episode_actions.append(float(a[0]))
+            episode_rewards.append(r)
 
             d = done
             buf.add(s, a, r, s2, float(d))
@@ -70,12 +87,30 @@ def train(total_steps=500_000, seed=0):
                 ema_str = f"{ema_ret:8.2f}" if ema_ret is not None else "       -"
                 alpha_str = f"{stats['alpha']:.6f}" if (stats is not None and t >= start_ep_steps) else "-"
                 entropy_str = f"{stats['entropy']:.3f}" if (stats is not None and t >= start_ep_steps) else "-"
-                print(f"ep {ep:04d} | steps {t:7d} | ret {ep_ret:8.2f} | ema {ema_str} | H {entropy_str} | EP={env.ep} | alpha={alpha_str}")
+                print(f"ep {ep:04d} | steps {t:7d} | ret {ep_ret:8.2f} | ema {ema_str} | H {entropy_str} | EP={episode_mode} | alpha={alpha_str}")
                 writer.add_scalar("episode/return", ep_ret, ep)
                 if ema_ret is not None:
                     writer.add_scalar("episode/ema_return", ema_ret, ep)
-                writer.add_scalar("episode/mode", env.ep, ep)
-                s = env.reset()  # random EP mode next episode
+                writer.add_scalar("episode/mode", episode_mode, ep)
+
+                episode_array = np.array(episode_states, dtype=np.float32)
+                data = {
+                    "time": np.array(episode_times, dtype=np.float32),
+                    "state": episode_array,
+                    "action": np.array(episode_actions, dtype=np.float32),
+                    "reward": np.array(episode_rewards, dtype=np.float32),
+                    "mode": np.array(episode_mode, dtype=np.int32),
+                    "episode": np.array(ep, dtype=np.int32),
+                    "control_dt": np.array(env.control_dt, dtype=np.float32),
+                    "internal_dt": np.array(env.h, dtype=np.float32),
+                    "params": np.array([env.p], dtype=object),
+                }
+                episode_snapshots[ep] = data
+                np.savez(run_dir / f"episode_{ep:05d}.npz", **data)
+                np.savez(run_dir / "latest_episode.npz", **data)
+
+                next_mode = np.random.randint(0, 4)
+                s = env.reset(ep_mode=next_mode)
                 ep_step = 0
                 ep_ret  = 0.0
 
@@ -89,4 +124,3 @@ def train(total_steps=500_000, seed=0):
 
 if __name__ == "__main__":
     train(total_steps=5_000_000, seed=42)
-
