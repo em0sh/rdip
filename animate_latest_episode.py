@@ -34,33 +34,57 @@ def load_episode(path: Path):
     )
 
 
+def wrap_pi_array(arr):
+    return (arr + np.pi) % (2 * np.pi) - np.pi
+
+
 def compute_geometry(states, params):
     L1 = params.get("L1", 0.16)
     l1 = params.get("l1", 0.07)
     l2 = params.get("l2", 0.13)
 
-    theta = states[:, 0]
-    alpha = states[:, 1]
-    beta = states[:, 2]
+    theta = wrap_pi_array(states[:, 0])
+    alpha_raw = wrap_pi_array(states[:, 1])
+    beta = wrap_pi_array(states[:, 2])
 
-    # Project onto plane aligned with arm direction (s-axis) and vertical (z-axis)
-    s_base = np.zeros_like(theta)
-    z_base = np.zeros_like(theta)
+    cos_t = np.cos(theta)
+    sin_t = np.sin(theta)
 
-    s_arm = s_base + L1
-    z_arm = np.zeros_like(theta)
+    # 3D positions for each link endpoint
+    base = np.zeros((len(theta), 3))
+    arm_tip = np.stack([L1 * cos_t, L1 * sin_t, np.zeros_like(theta)], axis=1)
 
-    s_first = s_arm + l1 * np.sin(alpha)
-    z_first = z_arm + l1 * np.cos(alpha)
+    horiz1 = l1 * np.sin(alpha_raw)
+    vert1 = l1 * np.cos(alpha_raw)
+    first_tip = arm_tip + np.stack([horiz1 * cos_t, horiz1 * sin_t, vert1], axis=1)
 
-    total_second = alpha + beta
-    s_second = s_first + l2 * np.sin(total_second)
-    z_second = z_first + l2 * np.cos(total_second)
+    total_second = alpha_raw + beta
+    horiz2 = l2 * np.sin(total_second)
+    vert2 = l2 * np.cos(total_second)
+    second_tip = first_tip + np.stack([horiz2 * cos_t, horiz2 * sin_t, vert2], axis=1)
 
-    s_coords = np.stack([s_base, s_arm, s_first, s_second], axis=1)
-    z_coords = np.stack([z_base, z_arm, z_first, z_second], axis=1)
+    # Simple oblique projection to 2D (rotate around vertical axis)
+    view_yaw = np.deg2rad(30)
+    c, s = np.cos(view_yaw), np.sin(view_yaw)
 
-    return s_coords, z_coords, theta, alpha, beta
+    def project(points):
+        x = points[:, 0]
+        y = points[:, 1]
+        z = points[:, 2]
+        x_proj = c * x - s * y
+        return x_proj, z
+
+    base_s, base_z = project(base)
+    arm_s, arm_z = project(arm_tip)
+    first_s, first_z = project(first_tip)
+    second_s, second_z = project(second_tip)
+
+    s_coords = np.stack([base_s, arm_s, first_s, second_s], axis=1)
+    z_coords = np.stack([base_z, arm_z, first_z, second_z], axis=1)
+
+    alpha_plot = wrap_pi_array(alpha_raw + (np.pi / 2.0))
+
+    return s_coords, z_coords, theta, alpha_plot, beta
 
 
 def animate_episode(path: Path):
@@ -89,7 +113,7 @@ def animate_episode(path: Path):
     z_max = np.max(z_coords) + 0.1
     ax_pend.set_xlim(s_min, s_max)
     ax_pend.set_ylim(z_min, z_max)
-    ax_pend.set_xlabel("Horizontal (m)")
+    ax_pend.set_xlabel("Projected horizontal (m)")
     ax_pend.set_ylabel("Vertical (m)")
     pend_line, = ax_pend.plot([], [], "-o", lw=2)
     time_text = ax_pend.text(0.02, 0.95, "", transform=ax_pend.transAxes)
@@ -132,7 +156,7 @@ def animate_episode(path: Path):
         init_func=init,
         interval=interval_ms,
         blit=True,
-        repeat=False,
+        repeat=True,
     )
     # Keep a reference to prevent garbage collection
     setattr(fig, "_anim", anim)

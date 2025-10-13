@@ -39,6 +39,8 @@ def train(total_steps=5_000_000, seed=0):
     episode_snapshots = {}
     mode_counts = defaultdict(int)
     mode_return_totals = defaultdict(float)
+    ep_start_time = time.time()
+    total_ep_time = 0.0
 
     try:
         for t in range(1, total_steps+1):
@@ -48,6 +50,7 @@ def train(total_steps=5_000_000, seed=0):
                 episode_actions = []
                 episode_rewards = []
                 episode_mode = env.ep
+                ep_start_time = time.time()
 
             # action
             if t < start_ep_steps:
@@ -86,6 +89,9 @@ def train(total_steps=5_000_000, seed=0):
             # episode end
             if done or ep_step >= ep_len_ctrl:
                 ep += 1
+                ep_time = time.time() - ep_start_time
+                total_ep_time += ep_time
+                avg_ep_time = total_ep_time / ep
                 ema_ret = ep_ret if ema_ret is None else (1.0 - ema_beta)*ema_ret + ema_beta*ep_ret
                 ema_str = f"{ema_ret:8.2f}" if ema_ret is not None else "       -"
                 alpha_str = f"{stats['alpha']:.6f}" if (stats is not None and t >= start_ep_steps) else "-"
@@ -96,13 +102,17 @@ def train(total_steps=5_000_000, seed=0):
                 total_eps = sum(mode_counts.values())
                 print(
                     f"ep {ep:04d} | steps {t:7d} | ret {ep_ret:8.2f} | ema {ema_str} | "
-                    f"H {entropy_str} | EP={episode_mode} | alpha={alpha_str}"
+                    f"H {entropy_str} | EP={episode_mode} | alpha={alpha_str} | "
+                    f"dt/ep {ep_time:6.2f}s | avg_dt/ep {avg_ep_time:6.2f}s"
+
                 )
                 writer.add_scalar("episode/return", ep_ret, ep)
                 if ema_ret is not None:
                     writer.add_scalar("episode/ema_return", ema_ret, ep)
                 writer.add_scalar("episode/mode", episode_mode, ep)
                 writer.add_scalar(f"episode/return_mode_{episode_mode}", ep_ret, ep)
+                writer.add_scalar("episode/duration", ep_time, ep)
+                writer.add_scalar("episode/duration_avg", avg_ep_time, ep)
                 for m in range(4):
                     if total_eps:
                         writer.add_scalar(f"episode/mode_pct_{m}", mode_counts[m]/total_eps, ep)
