@@ -88,5 +88,5 @@ def train(total_steps=500_000, seed=0):
         writer.close()
 
 if __name__ == "__main__":
-    train(total_steps=1_000_000, seed=42)
+    train(total_steps=5_000_000, seed=42)
 
