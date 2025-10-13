@@ -1,2 +1,12 @@
 *.DS_Store
+runs/*
+runs/
 
+
+# logs
+runs/
+*.tfevents*
+
+# logs
+runs/
+*.tfevents*
