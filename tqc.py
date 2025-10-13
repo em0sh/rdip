@@ -21,30 +21,33 @@ class Actor(nn.Module):
         self.log_std_min, self.log_std_max = -5, 2
         self.act_limit = act_limit
 
-    def forward(self, obs, deterministic=False, with_logprob=True):
-        mu_logstd = self.net(obs)
-        mu, log_std = mu_logstd[:, :1], mu_logstd[:, 1:]
-        log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
-        std = torch.exp(log_std)
+    def forward(self, obs: torch.Tensor, deterministic: bool = False, with_logprob: bool = True):
+        # DIAG:
+        '''
+        mu, log_std = self.net(obs)                    # your layers to get mu, log_std
+        log_std = torch.clamp(log_std, -5.0, 2.0)
+        std = log_std.exp()
+        '''
+        out = self.net(obs)                # shape: (B, 2*act_dim)
+        mu, log_std = out.chunk(2, dim=-1) # two tensors: (B, act_dim) each
+        log_std = torch.clamp(log_std, -5.0, 2.0)
+        std     = log_std.exp()
 
-        if deterministic:
-            pi = mu
-        else:
-            pi = mu + std * torch.randn_like(mu)
 
-        # tanh squashing to [-1,1], then scale to action limit
-        pi_tanh = torch.tanh(pi)
-        action = self.act_limit * pi_tanh
+        normal = torch.distributions.Normal(mu, std)
+        u = mu if deterministic else normal.rsample()
+        a = torch.tanh(u)
 
-        logp_pi = None
+        # Always create a Tensor for log-prob with shape (B, 1)
         if with_logprob:
-            # log-prob correction for tanh (SAC)
-            # Gaussian log-prob
-            pre_sum = -0.5*(((pi - mu)/std)**2 + 2*log_std + math.log(2*math.pi))
-            logp = pre_sum.sum(dim=-1, keepdim=True)
-            # change-of-variables
-            logp_pi = logp - torch.log(1 - pi_tanh.pow(2) + 1e-6)
-        return action, logp_pi
+            # base log-prob under Gaussian
+            logp_u = normal.log_prob(u).sum(dim=-1, keepdim=True)
+            # tanh change-of-variables correction
+            logp_pi = logp_u - torch.log(1 - a.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
+        else:
+            logp_pi = torch.zeros(a.shape[:-1] + (1,), device=a.device, dtype=a.dtype)
+
+        return a, logp_pi
 
 class QuantileCritic(nn.Module):
     def __init__(self, obs_dim, act_dim, n_quant=25, hidden=256):
@@ -84,7 +87,7 @@ class Replay:
 
 class TQC:
     def __init__(self, obs_dim=10, act_limit=50.0, gamma=0.99, lr=3e-4,
-                 n_quant=25, n_critics=2, truncate_top_frac=0.1, tau=0.005, target_entropy=-1.0):
+                 n_quant=25, n_critics=2, truncate_top_frac=0.1, tau=0.005, target_entropy=-1.0, fixed_alpha=None):
         self.act_limit=act_limit
         self.gamma=gamma
         self.tau=tau
@@ -103,10 +106,17 @@ class TQC:
         self.log_alpha = torch.tensor(0.0, device=DEVICE, requires_grad=True)
         self.a_opt = optim.Adam([self.log_alpha], lr=lr)
         self.target_entropy = target_entropy
+        self.fixed_alpha = fixed_alpha
 
         # fixed quantile fractions (uniform)
         taus = (torch.arange(self.nq, device=DEVICE, dtype=torch.float32)+0.5)/self.nq
         self.taus = taus.view(1, self.nq)  # (1, nq)
+
+        if self.fixed_alpha is None:
+            # existing alpha state (log_alpha) and optimizer
+            self.log_alpha = torch.tensor(0.0, requires_grad=True, device=DEVICE)
+            self.a_opt = optim.Adam([self.log_alpha], lr=lr)
+
 
     @torch.no_grad()
     def act(self, obs, deterministic=False):
@@ -128,7 +138,13 @@ class TQC:
         with torch.no_grad():
             # next action + entropy
             A2, logp2 = self.actor(S2, deterministic=False, with_logprob=True)
-            alpha = self.log_alpha.exp()
+
+            # DIAG: A/B testing fixed alpha by removing the line below
+            # alpha = self.log_alpha.exp()
+            # DIAG: and replacing it with
+            alpha = (torch.as_tensor(self.fixed_alpha, device=DEVICE)
+                if self.fixed_alpha is not None else self.log_alpha.exp())
+
             # target critics: compute quantiles, then take elementwise min across critics (TQC concatenates & drops top quantiles)
             target_quants=[]
             for ct in self.critics_tgt:
@@ -175,16 +191,34 @@ class TQC:
         pi_loss.backward()
         self.pi_opt.step()
 
+        # DIAG: try replacing this for fixed alpha
+        '''
         # temperature
         alpha_loss = -(self.log_alpha * (self.target_entropy - logp.detach()).mean())
         self.a_opt.zero_grad()
         alpha_loss.backward()
         self.a_opt.step()
+        '''
+
+        # temperature (skip if fixed alpha is set)
+        if self.fixed_alpha is None:
+            alpha_loss = -(self.log_alpha * (self.target_entropy - logp.detach()).mean())
+            self.a_opt.zero_grad()
+            alpha_loss.backward()
+            self.a_opt.step()
+
 
         # targets
         self._soft_update(self.critics, self.critics_tgt)
 
+        # DIAG: more fixed alpha replacements
+        '''
         return dict(q_loss=float(q_loss.item()),
                     pi_loss=float(pi_loss.item()),
                     alpha=float(self.log_alpha.exp().item()))
-
+        '''
+        return dict(
+    q_loss=float(q_loss.item()),
+    pi_loss=float(pi_loss.item()),
+    alpha=float(alpha.detach().item()),
+)

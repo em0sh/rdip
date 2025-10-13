@@ -1,4 +1,6 @@
 # train_rdip_tqc.py
+from torch.utils.tensorboard import SummaryWriter
+
 import time
 import numpy as np
 from rdip_env import RDIPEnv
@@ -7,7 +9,16 @@ import torch
 
 def train(total_steps=500_000, seed=0):
     env = RDIPEnv(seed=seed)
+    writer = SummaryWriter()
+    # DIAG: replacing this line for fixed alpha
     algo = TQC(obs_dim=10, act_limit=env.max_action, target_entropy=-1.0)  # 1D action
+    # DIAG: with this
+	# A/B test with fixed alpha (e.g., 0.1). Comment this in for the experiment:
+    algo = TQC(obs_dim=10,
+               act_limit=env.max_action,
+               target_entropy=-1.0,      # kept for when you turn auto back on
+               fixed_alpha=0.1)          # <— enable fixed α here
+
     buf = Replay(size=200_000)
 
     start_ep_steps = 10000  # pure exploration warmup
@@ -48,14 +59,25 @@ def train(total_steps=500_000, seed=0):
             for _ in range(updates_per_step):
                 stats = algo.train_step(buf, batch=batch)
 
+                # >>> Per-update TensorBoard logs <<<
+                writer.add_scalar("loss/actor",  float(stats.get("actor_loss", float("nan"))), global_step=t)
+                writer.add_scalar("loss/critic", float(stats.get("critic_loss", float("nan"))), global_step=t)
+                writer.add_scalar("sac/alpha",   float(stats.get("alpha",      float("nan"))), global_step=t)
+                writer.add_scalar("policy/entropy", float(stats.get("policy_entropy", float("nan"))), global_step=t)
+
         # episode end
         if done or ep_step >= ep_len_ctrl:
             ep += 1
-            print(f"ep {ep:04d} | steps {t:7d} | ret {ep_ret:8.2f} | EP={env.ep} | alpha={stats['alpha'] if t>=start_ep_steps else '-'}")
-
-            # add rolling average for determining performance
+            # compute the rolling average using the EMA method
             avg_ret = 0.95 * avg_ret + 0.05 * ep_ret if ep > 1 else ep_ret
-            print(f"ep {ep:04d} | ret {ep_ret:8.2f} | avg {avg_ret:8.2f}")
+            
+            print(f"ep {ep:04d} | steps {t:7d} | ret {ep_ret:8.2f} | avg {avg_ret:8.2f} | EP={env.ep} | alpha={stats['alpha'] if t>=start_ep_steps else '-'}")
+
+            # >>> Per-update TensorBoard logs <<<
+            alpha_val = float(stats['alpha']) if (t >= start_ep_steps and 'alpha' in stats) else float("nan")
+            writer.add_scalar("train/ep_return", float(ep_ret), global_step=t)
+            writer.add_scalar("train/ep_length", int(ep_step),  global_step=t)
+            writer.add_scalar("sac/alpha_ep",    alpha_val,     global_step=t)
 
             s = env.reset()  # random EP mode next episode
             ep_step = 0
