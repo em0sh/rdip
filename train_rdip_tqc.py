@@ -110,16 +110,6 @@ def train(total_steps=5_000_000, seed=0):
                 ep_returns[idx] += reward
                 total_steps += 1
 
-                if warmup_remaining <= 0 and len(buf) >= batch:
-                    for _ in range(updates_per_step):
-                        stats = algo.train_step(buf, batch=batch)
-                    if stats is not None:
-                        writer.add_scalar("train/q_loss", stats["q_loss"], total_steps)
-                        writer.add_scalar("train/pi_loss", stats["pi_loss"], total_steps)
-                        writer.add_scalar("train/alpha", stats["alpha"], total_steps)
-                        writer.add_scalar("train/entropy", stats["entropy"], total_steps)
-                        writer.add_scalar("train/log_prob", stats["logp"], total_steps)
-
                 if done:
                     episode_times[idx].append(env.t)
                     episode_states[idx].append(env.x.copy())
@@ -189,6 +179,19 @@ def train(total_steps=5_000_000, seed=0):
                     ep_start_times[idx] = time.time()
                 if total_steps >= steps_goal:
                     break
+            if total_steps >= steps_goal:
+                break
+
+            if warmup_remaining <= 0 and len(buf) >= batch:
+                updates_to_run = updates_per_step
+                for _ in range(updates_to_run):
+                    stats = algo.train_step(buf, batch=batch)
+                    if stats is not None:
+                        writer.add_scalar("train/q_loss", stats["q_loss"], total_steps)
+                        writer.add_scalar("train/pi_loss", stats["pi_loss"], total_steps)
+                        writer.add_scalar("train/alpha", stats["alpha"], total_steps)
+                        writer.add_scalar("train/entropy", stats["entropy"], total_steps)
+                        writer.add_scalar("train/log_prob", stats["logp"], total_steps)
         actor = algo.actor.cpu().eval()
         scripted = torch.jit.script(actor)
         scripted.save("rdip_tqc_actor.pt")
