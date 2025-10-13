@@ -1,5 +1,6 @@
 # train_rdip_tqc.py
 import time
+from collections import defaultdict
 import numpy as np
 from rdip_env import RDIPEnv
 from tqc import TQC, Replay, DEVICE
@@ -7,11 +8,11 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
 
-def train(total_steps=500_000, seed=0):
+def train(total_steps=5_000_000, seed=0):
     print(f"[train] Device: {DEVICE}")
     env = RDIPEnv(seed=seed)
-    algo = TQC(obs_dim=10, act_limit=env.max_action, target_entropy=-1.0)  # 1D action
-    buf = Replay(size=200_000)
+    algo = TQC(obs_dim=10, act_limit=env.max_action, target_entropy=-0.4, n_critics=5)  # 1D action
+    buf = Replay(size=1_000_000)
     run_name = f"TQC_{time.strftime('%Y%m%d-%H%M%S')}_seed{seed}"
     run_dir = Path("runs") / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -36,6 +37,8 @@ def train(total_steps=500_000, seed=0):
     episode_rewards = []
     episode_mode = env.ep
     episode_snapshots = {}
+    mode_counts = defaultdict(int)
+    mode_return_totals = defaultdict(float)
 
     try:
         for t in range(1, total_steps+1):
@@ -87,11 +90,28 @@ def train(total_steps=500_000, seed=0):
                 ema_str = f"{ema_ret:8.2f}" if ema_ret is not None else "       -"
                 alpha_str = f"{stats['alpha']:.6f}" if (stats is not None and t >= start_ep_steps) else "-"
                 entropy_str = f"{stats['entropy']:.3f}" if (stats is not None and t >= start_ep_steps) else "-"
-                print(f"ep {ep:04d} | steps {t:7d} | ret {ep_ret:8.2f} | ema {ema_str} | H {entropy_str} | EP={episode_mode} | alpha={alpha_str}")
+
+                mode_counts[episode_mode] += 1
+                mode_return_totals[episode_mode] += ep_ret
+                total_eps = sum(mode_counts.values())
+                print(
+                    f"ep {ep:04d} | steps {t:7d} | ret {ep_ret:8.2f} | ema {ema_str} | "
+                    f"H {entropy_str} | EP={episode_mode} | alpha={alpha_str}"
+                )
                 writer.add_scalar("episode/return", ep_ret, ep)
                 if ema_ret is not None:
                     writer.add_scalar("episode/ema_return", ema_ret, ep)
                 writer.add_scalar("episode/mode", episode_mode, ep)
+                writer.add_scalar(f"episode/return_mode_{episode_mode}", ep_ret, ep)
+                for m in range(4):
+                    if total_eps:
+                        writer.add_scalar(f"episode/mode_pct_{m}", mode_counts[m]/total_eps, ep)
+                    if mode_counts[m]:
+                        writer.add_scalar(
+                            f"episode/return_mode_avg_{m}",
+                            mode_return_totals[m] / mode_counts[m],
+                            ep,
+                        )
 
                 episode_array = np.array(episode_states, dtype=np.float32)
                 data = {

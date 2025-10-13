@@ -170,7 +170,7 @@ class TQC:
 
         # Allow gradients from critics to flow back to the actor (required for policy improvement)
         q_vals = [qc(S, a).mean(dim=1, keepdim=True) for qc in self.critics]  # mean across quantiles per critic
-        q_pi = torch.min(*q_vals)
+        q_pi = torch.stack(q_vals, dim=0).min(dim=0)[0]
         pi_loss = (alpha*logp - q_pi).mean()
 
         self.pi_opt.zero_grad()
@@ -193,4 +193,3 @@ class TQC:
                     alpha=float(self.log_alpha.exp().item()),
                     logp=float(logp_detached.mean().item()),
                     entropy=float((-logp_detached).mean().item()))
-
