@@ -14,3 +14,7 @@ runs/
 # logs
 runs/
 *.tfevents*
+
+# logs
+runs/
+*.tfevents*
