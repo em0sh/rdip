@@ -276,12 +276,12 @@ class RDIPEnv:
                 self.x = self._rk4_impl(self.x, u, self.h, self.p)
             self.t += self.h
         # produce reward and done flag
-        r = self._reward()
+        r = self._reward(u)
         done = self.t >= self.T
         return self._obs(), r, done, {}
 
     # ---------- Reward (Eq. (16)) ----------
-    def _reward(self):
+    def _reward(self, u):
         th, al, be, thd, ad, bd = self.x
         # target angles by EP (Table 3)
         alpha_star, beta_star = EP_TARGETS[self.ep]
@@ -290,10 +290,7 @@ class RDIPEnv:
         th = wrap_pi(th); al = wrap_pi(al); be = wrap_pi(be)
 
         # components
-        # NB: we don't have direct |u| here; use |theta_ddot| proxy through recent dynamics if desired.
-        # In practice we use the chosen action magnitude at call-site for Ru; here we approximate via |theta_ddot| = |ẋ4|
-        # but since we integrate internally, we approximate Ru as modest constant factor to keep code local:
-        Ru  = 1.0  # optionally feed actual |u| from the agent into reward() externally
+        Ru  = math.exp(-0.005 * abs(u))
         Rth = 0.5 + 0.5*math.cos(th)
         Ra  = 0.5 + 0.5*math.cos(al - alpha_star)
         Rb  = 0.5 + 0.5*math.cos(be - beta_star)

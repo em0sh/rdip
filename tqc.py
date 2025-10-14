@@ -93,7 +93,8 @@ class TQC:
         self.gamma=gamma
         self.tau=tau
         self.nq=n_quant
-        self.trunc_k = int(max(1, math.floor(truncate_top_frac*n_quant)))
+        self.trunc_frac = truncate_top_frac
+        self.n_critics = n_critics
 
         self.actor=Actor(obs_dim, act_limit).to(DEVICE)
         self.critics=nn.ModuleList([QuantileCritic(obs_dim, 1, n_quant) for _ in range(n_critics)]).to(DEVICE)
@@ -142,8 +143,10 @@ class TQC:
             tq = target_quants.reshape(S2.shape[0], -1)  # (B, Ncrit*nq)
             # sort and drop largest top-k quantiles
             tq_sorted, _ = torch.sort(tq, dim=1)
-            k = self.trunc_k
-            tq_kept = tq_sorted[:, :tq_sorted.shape[1]-k]  # drop top-K
+            total_quants = tq_sorted.shape[1]
+            drop = max(1, int(math.floor(self.trunc_frac * total_quants)))
+            drop = min(drop, total_quants - 1)
+            tq_kept = tq_sorted[:, :total_quants-drop]  # drop top quantiles
             # Soft value: mean of kept quantiles minus entropy term
             V_tgt = tq_kept.mean(dim=1, keepdim=True) - alpha*logp2
             # 1-step distributional target = r + gamma*(1-d)*V_tgt (broadcasted as quantile targets)

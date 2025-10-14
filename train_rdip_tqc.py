@@ -1,5 +1,4 @@
 # train_rdip_tqc.py
-import math
 import os
 import time
 from collections import defaultdict
@@ -19,7 +18,7 @@ def train(total_steps=5_000_000, seed=0):
 
     # Instantiate a probe environment to read constants and act_limit
     probe_env = RDIPEnv(seed=seed)
-    algo = TQC(obs_dim=10, act_limit=probe_env.max_action, target_entropy=-0.4, n_critics=5)
+    algo = TQC(obs_dim=10, act_limit=probe_env.max_action, target_entropy=-1.0, n_critics=5)
     buf = Replay(size=1_000_000)
 
     run_name = f"TQC_{time.strftime('%Y%m%d-%H%M%S')}_seed{seed}"
@@ -30,7 +29,7 @@ def train(total_steps=5_000_000, seed=0):
 
     start_ep_steps = 10_000
     warmup_remaining = start_ep_steps
-    batch = 512
+    batch = 256
     updates_per_step = 1
 
     # Determine how many environments to run in parallel
@@ -56,7 +55,7 @@ def train(total_steps=5_000_000, seed=0):
     mode_return_totals = defaultdict(float)
     stats = None
 
-    mode_weights = np.array([0.2, 0.2, 0.2, 0.4], dtype=np.float64)
+    mode_weights = np.ones(4, dtype=np.float64)
     mode_weights /= mode_weights.sum()
 
     def weighted_mode(rng: np.random.Generator) -> int:
@@ -104,12 +103,10 @@ def train(total_steps=5_000_000, seed=0):
             for idx in range(active_envs):
                 env = envs[idx]
                 if executor:
-                    next_obs, base_r, done, _ = futures[idx].result()
+                    next_obs, reward, done, _ = futures[idx].result()
                 else:
-                    next_obs, base_r, done, _ = env.step(action_scalars[idx])
+                    next_obs, reward, done, _ = env.step(action_scalars[idx])
 
-                action_scalar = action_scalars[idx]
-                reward = float(math.exp(-0.005 * abs(action_scalar)) * base_r)
                 episode_rewards[idx].append(reward)
                 buf.add(obs_list[idx], actions[idx], reward, next_obs, float(done))
                 obs_list[idx] = next_obs
