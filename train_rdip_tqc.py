@@ -35,7 +35,7 @@ def train(total_steps=5_000_000, seed=0):
 
     # Determine how many environments to run in parallel
     cpu_count = os.cpu_count() or 1
-    max_envs = min(max(cpu_count // 2, 1), 8)
+    max_envs = min(max(cpu_count - 2, 1), 16)
     num_envs = max_envs if DEVICE.type == "cuda" and max_envs > 1 else 1
     print(f"[train] Parallel environments: {num_envs}")
 
@@ -56,8 +56,14 @@ def train(total_steps=5_000_000, seed=0):
     mode_return_totals = defaultdict(float)
     stats = None
 
+    mode_weights = np.array([0.2, 0.2, 0.2, 0.4], dtype=np.float64)
+    mode_weights /= mode_weights.sum()
+
+    def weighted_mode(rng: np.random.Generator) -> int:
+        return int(rng.choice(4, p=mode_weights))
+
     for idx, env in enumerate(envs):
-        obs_list.append(env.reset(ep_mode=np.random.randint(0, 4)))
+        obs_list.append(env.reset(ep_mode=weighted_mode(env.rng)))
         episode_modes.append(env.ep)
         ep_start_times[idx] = time.time()
 
@@ -151,8 +157,6 @@ def train(total_steps=5_000_000, seed=0):
                     writer.add_scalar("episode/duration_per_env", per_env_time, ep)
                     writer.add_scalar("episode/duration_per_env_avg", avg_per_env_time, ep)
                     for m in range(4):
-                        if total_eps:
-                            writer.add_scalar(f"episode/mode_pct_{m}", mode_counts[m] / total_eps, ep)
                         if mode_counts[m]:
                             writer.add_scalar(
                                 f"episode/return_mode_avg_{m}",
@@ -174,7 +178,7 @@ def train(total_steps=5_000_000, seed=0):
                     np.savez(run_dir / f"episode_{ep:05d}.npz", **data)
                     np.savez(latest_episode_path, **data)
 
-                    obs_list[idx] = env.reset(ep_mode=np.random.randint(0, 4))
+                    obs_list[idx] = env.reset(ep_mode=weighted_mode(env.rng))
                     episode_modes[idx] = env.ep
                     episode_times[idx] = []
                     episode_states[idx] = []
