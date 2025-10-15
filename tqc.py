@@ -48,10 +48,10 @@ class Actor(nn.Module):
         return action, logp_pi
 
 class QuantileCritic(nn.Module):
-    def __init__(self, obs_dim, act_dim, n_quant=25, hidden=256):
+    def __init__(self, obs_dim, act_dim, n_quant=25, hidden=512):
         super().__init__()
         self.nq = n_quant
-        self.q_net = mlp([obs_dim + act_dim, hidden, hidden, n_quant], act=nn.ReLU)
+        self.q_net = mlp([obs_dim + act_dim, hidden, hidden, hidden, n_quant], act=nn.ReLU)
 
     def forward(self, obs, act):
         x = torch.cat([obs, act], dim=-1)
@@ -144,9 +144,9 @@ class TQC:
             # sort and drop largest top-k quantiles
             tq_sorted, _ = torch.sort(tq, dim=1)
             total_quants = tq_sorted.shape[1]
-            drop = max(1, int(math.floor(self.trunc_frac * total_quants)))
-            drop = min(drop, total_quants - 1)
-            tq_kept = tq_sorted[:, :total_quants-drop]  # drop top quantiles
+            drop_per = max(1, int(math.floor(self.trunc_frac * self.nq)))
+            drop = min(total_quants - 1, drop_per * self.n_critics)
+            tq_kept = tq_sorted[:, :total_quants-drop]
             # Soft value: mean of kept quantiles minus entropy term
             V_tgt = tq_kept.mean(dim=1, keepdim=True) - alpha*logp2
             # 1-step distributional target = r + gamma*(1-d)*V_tgt (broadcasted as quantile targets)
