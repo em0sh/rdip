@@ -18,8 +18,10 @@ def train(total_steps=5_000_000, seed=0):
 
     # Instantiate a probe environment to read constants and act_limit
     probe_env = RDIPEnv(seed=seed)
-    algo = TQC(obs_dim=10, act_limit=probe_env.max_action, target_entropy=-1.0, n_critics=5)
-    buf = Replay(size=1_000_000)
+    initial_obs = probe_env.reset(ep_mode=0)
+    obs_dim = initial_obs.shape[0]
+    algo = TQC(obs_dim=obs_dim, act_limit=probe_env.max_action, target_entropy=-1.0, n_critics=5)
+    buf = Replay(size=1_000_000, obs_dim=obs_dim)
 
     run_name = f"TQC_{time.strftime('%Y%m%d-%H%M%S')}_seed{seed}"
     run_dir = Path("runs") / run_name

@@ -29,6 +29,13 @@ EP_TARGETS = {
     3: (0.0,       0.0),
 }
 
+EP_MODE_BITS = {
+    0: (0.0, 0.0),  # Down, Down
+    1: (0.0, 1.0),  # Down, Up
+    2: (1.0, 0.0),  # Up, Down
+    3: (1.0, 1.0),  # Up, Up
+}
+
 def wrap_pi(a):
     # wrap angle to [-pi, pi]
     a = (a + math.pi) % (2*math.pi) - math.pi
@@ -256,12 +263,13 @@ class RDIPEnv:
         # wrap angular positions
         th = wrap_pi(th); al = wrap_pi(al); be = wrap_pi(be)
         # state features (Eq. (13))
+        mode_bits = EP_MODE_BITS[self.ep]
         s = np.array([
             math.sin(th), math.cos(th),
             math.sin(al), math.cos(al),
             math.sin(be), math.cos(be),
             thd, ad, bd,
-            float(self.ep)  # encode EP as a scalar context
+            mode_bits[0], mode_bits[1],
         ], dtype=np.float32)
         return s
 

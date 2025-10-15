@@ -59,11 +59,11 @@ class QuantileCritic(nn.Module):
         return q
 
 class Replay:
-    def __init__(self, size=1_000_000):
-        self.S = np.zeros((size, 10), np.float32)   # obs_dim=10
+    def __init__(self, size=1_000_000, obs_dim=10):
+        self.S = np.zeros((size, obs_dim), np.float32)
         self.A = np.zeros((size, 1),  np.float32)
         self.R = np.zeros((size, 1),  np.float32)
-        self.S2= np.zeros((size, 10), np.float32)
+        self.S2= np.zeros((size, obs_dim), np.float32)
         self.D = np.zeros((size, 1),  np.float32)
         self.ptr = 0; self.full=False; self.size=size
 
