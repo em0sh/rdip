@@ -1,0 +1,832 @@
+       Controlling Overestimation Bias with Truncated Mixture of Continuous
+                           Distributional Quantile Critics
+
+
+                   Arsenii Kuznetsov 1 Pavel Shvechikov 1 2 Alexander Grishin 1 3 Dmitry Vetrov 1 3
+
+
+                            Abstract                             Thrun & Schwartz (1993) elucidate the overestimation as
+                                                                 a consequence of Jensen’s inequality: the maximum of the
+       The overestimation bias is one of the major im-
+                                                                 Q-function over actions is not greater than the expected
+       pediments to accurate off-policy learning. This
+                                                                 maximum of noisy (approximate) Q-function. Specifically,
+       paper investigates a novel way to alleviate the
+                                                                 for any action-dependent random noise U (a) such that
+       overestimation bias in a continuous control set-
+                                                                 ∀a EU [ U (a) ] = 0,
+       ting. Our method—Truncated Quantile Critics,
+       TQC,—blends three ideas: distributional repre-                  max Q(s, a) = max EU [ Q(s, a) + U (a) ]
+       sentation of a critic, truncation of critics predic-             a             a
+                                                                                        h                       i           (1)
+       tion, and ensembling of multiple critics. Distribu-                         ≤ EU max{Q(s, a) + U (a)} .
+                                                                                               a
+       tional representation and truncation allow for ar-
+       bitrary granular overestimation control, while en-        In practice, the noise U (a) may arise for various reasons and
+       sembling provides additional score improvements.          from various sources, such as spontaneous errors in func-
+       TQC outperforms the current state of the art on all       tion approximation, Q-function invalidation due to ongoing
+       environments from the continuous control bench-           policy optimization, stochasticity of environment, etc. Off-
+       mark suite, demonstrating 25% improvement on              policy algorithms grounded in temporal difference learning
+       the most challenging Humanoid environment.                are especially sensitive to approximation errors since er-
+                                                                 rors are propagated backward through episodic time and
+                                                                 accumulate over the learning process.
+1. Introduction
+                                                                 The de facto standard for alleviating overestimations in dis-
+Sample efficient off-policy reinforcement learning demands       crete control is the double estimator (Van Hasselt, 2010;
+accurate approximation of the Q-function. Quality of ap-         2013). However, Fujimoto et al. (2018b) argue that for
+proximation is key for stability and performance, since it is    continuous control this estimator may still overestimate in
+the cornerstone for temporal difference target computation,      highly variable state-action space regions, and propose to
+and action selection in value-based methods (Mnih et al.,        promote underestimation by taking the minimum over two
+2013), or policy optimization in continuous actor-critic set-    separate approximators. These approximators constitute
+tings (Haarnoja et al., 2018a; Fujimoto et al., 2018b).          naturally an ensemble, the size of which controls the inten-
+                                                                 sity of underestimation: more approximators correspond to
+In continuous domains, policy optimization relies on gra-
+                                                                 more severe underestimation (Lan et al., 2020). We argue,
+dients of the Q-function approximation, sensing and ex-
+                                                                 that this approach, while very successful in practice, has a
+ploiting erroneous positive biases. Recently, Fujimoto et al.
+                                                                 few shortcomings:
+(2018b) significantly improved the performance of a con-
+tinuous policy by introducing a novel way to alleviate the
+                                                                   • The overestimation control is coarse: it is impossi-
+overestimation bias (Thrun & Schwartz, 1993). We con-
+                                                                     ble to take the minimum over a fractional number of
+tinue this line of research and propose an alternative highly
+                                                                     approximators (see Section 4.1).
+competitive method for controlling overestimation bias.
+   1
+    Samsung AI center, Moscow, Russia 2 National Research Uni-
+                                                                   • The aggregation with min is wasteful: it ignores all es-
+versity Higher School of Economics, Moscow, Russia 3 Samsung-        timates except the minimal one, diminishing the power
+HSE Laboratory, National Research University Higher School           of the ensemble of approximators.
+of Economics, Moscow, Russia. Correspondence to: Arsenii
+Kuznetsov <brickerino@gmail.com>.                                We address these shortcomings with a novel method called
+                       th
+Proceedings of the 37 International Conference on Machine        Truncated Quantile Critics (TQC). In the design of TQC, we
+Learning, Online, PMLR 119, 2020. Copyright 2020 by the au-      draw on three ideas: distributional representation of a critic,
+thor(s).                                                         truncation of approximated distribution, and ensembling.
+           Controlling Overestimation Bias with Truncated Mixture of Continuous Distributional Quantile Critics
+                                                                                           1e3
+Distributional representations The distributional perspec-                            12
+
+tive (Bellemare et al., 2017) advocates the modeling of the
+                                                                                      10
+distribution of the random return, instead of the more com-
+
+
+
+
+                                                                 Evaluation returns
+                                                                                       8
+mon modeling of the Q-function, the expectation of the                                                                          TQC 1 net, truncation
+                                                                                                                                TQC 1 net, no truncation
+return. In our work, we adapt QR-DQN (Dabney et al.,                                   6
+                                                                                                                                SAC 1 net
+                                                                                                                                TQC full method (ours)
+2018b) for continuous control and approximate the quan-                                4                                        SAC full method
+tiles of the return distribution conditioned on the state and
+                                                                                       2
+action. Distributional perspective allows for learning the
+                                                                                       0
+intrinsic randomness of the environment and policy, also                                    0    2   4            6   8   10
+called aleatoric uncertainty. We are not aware of any prior                                              Frames           1e6
+
+
+work employing aleatoric uncertainty for overestimation
+bias control. We argue that the granularity of distributional    Figure 1. Evaluation on the Humanoid environment. Results are
+                                                                 averaged over 4 seeds, ± std is shaded.
+representation is especially useful for precise overestimation
+control.
+Truncation To control the overestimation, we propose to           To facilitate reproducibility, we carefully document the ex-
+truncate the right tail of the return distribution approxima-     perimental setup, perform exhaustive ablation, average ex-
+tion by dropping several of the topmost atoms. By varying         perimental results over a large number of seeds, publish raw
+the number of dropped atoms, we can balance between over-         data of seed runs, and release the code for Tensorflow1 and
+and underestimation. In a sense, the truncation operator is       PyTorch2 .
+parsimonious: we drop only a small number of atoms (typi-
+cally, around 8% of the total number of atoms). Additionally,      2. Background
+truncation does not require multiple separate approximators:
+our method surpasses the current state of the art (which uses      2.1. Notation
+multiple approximators) on some benchmarks even using
+                                                                 We consider a Markov decision process, MDP, defined by
+only a single one (Figure 1).
+                                                                 the tuple (S, A, P, R, γ), with continuous state and action
+Ensembling The core operation of our method—truncation           spaces S and A, unknown state transition density P : S ×
+of return distribution—does not impose any restrictions on       A × S → [0, ∞), random variable reward function R, and
+the number of required approximators. This effectively           discount factor γ ∈ [0, 1). A policy π maps each state s ∈ S
+decouples overestimation control from ensembling, which,         to a distribution over A. We write H(π(st )) to denote the
+in turn, provides for additional performance improvement         entropy of the policy conditioned on the state st .
+(Figure 1).
+                                                                 We write dim X for the dimensionality of the space X . Un-
+Our method improves the performance on all environments          less explicitly stated otherwise, the ED,π [ · ] signifies the
+in the OpenAI gym (Brockman et al., 2016) benchmark              expectation over the (st , at , rt , st+1 ) from experience re-
+suite powered by MuJoCo (Todorov et al., 2012), with up          play D, and at+1 from π(·|st+1 ). We use the overlined
+to 30% improvement on some of the environments. For the          notation to denote the parameters of target networks, i.e., ψ
+most challenging Humanoid environment this improvement           denotes the exponential moving average of parameters ψ.
+translates into twice the running speed of the previous SOTA.
+The price to pay is the computational overhead carried by          2.2. Soft Actor Critic
+distributional representations and ensembling (Section 5.3).
+                                                                  The Soft Actor Critic (SAC) (Haarnoja et al., 2018a) is an
+This work makes the following contributions to the field of       off-policy actor-critic algorithm based on the maximum en-
+continuous control:                                               tropy framework. The objective encourages policy stochas-
+                                                                  ticity by augmenting the reward with the entropy.
+  1. We design a practical method for the fine-grained con-
+     trol over the overestimation bias, called Truncated          The policy parameters φ can be learned by minimizing the
+     Quantile Critics (Section 3). For the first time, we                        "                                     ! #
+     (1) incorporate aleatoric uncertainty into the overesti-                                       exp α1 Qψ (st , ·)
+                                                                  Jπ (φ) = ED,π DKL πφ (·|st )                              ,
+     mation bias control, (2) decouple overestimation con-                                               Cψ (st )
+     trol and multiplicity of approximators, (3) ensemble                                                                 (2)
+     distributional approximators in a novel way.                 where Qψ is the soft Q-function and Cψ (st ) is the normal-
+  2. We advance the state of the art on the standard contin-                           1
+                                                                      https://github.com/bayesgroup/tqc
+     uous control benchmark suite (Section 4) and perform                              2
+                                                                      https://github.com/bayesgroup/tqc_
+     extensive ablation study (Section 5).                         pytorch
+            Controlling Overestimation Bias with Truncated Mixture of Continuous Distributional Quantile Critics
+
+izing constant.                                                   To improve gradients for small u authors propose to use the
+                                                                  Huber quantile loss (asymmetric Huber loss):
+The soft Q-function parameters θ can be learned by mini-
+mizing the soft Bellman residual
+                                                                                τ (u) = |τ − I(u < 0)|LH (u),
+                                                                               ρH                      1
+                                                                                                                            (8)
+                                                      
+                      1                              2
+    JQ (ψ) = ED,π       (Qψ (st , at ) − y(st , at )) ,  (3)      where L1H (u) is a Huber loss with parameter 1.
+                      2
+where y(st , at ) denotes the temporal difference target          3. Truncated Quantile Critics, TQC
+                h                                          i
+ r(st , at ) + γ Qψ (st+1 , at+1 ) − α log πφ (at+1 |st+1 ) ,     We start with an informal explanation of TQC and motivate
+                                                            (4)   our design choices. Next, we outline the formal procedure
+and α is the entropy temperature coefficient. Haarnoja et al.     at the core of TQC, specify the loss functions and present
+(2018b) proposed to dynamically adjust the α by taking a          an algorithm for practical implementation.
+gradient step with respect to the loss
+                                                                  3.1. Overview
+   J(α) = ED,πφ [log α · (− log πφ (at |st ) − HT )] ,     (5)
+                                                                  To achieve granularity in controlling the overestimation, we
+each time the πφ changes. This decreases the α, if the            ”decompose” return into atoms of distributional representa-
+stochastic estimate of policy entropy, − log πφ (at |st ), is     tion. By varying the number of atoms, we can control the
+higher than HT , and increases α otherwise. The target            precision of the return distribution approximation.
+entropy usually is set heuristically to HT = − dim A.
+                                                                  To control the overestimation, we propose to truncate the
+Haarnoja et al. (2018b) takes the minimum over two Q-             approximation of the return distribution: we drop atoms with
+function approximators to compute the target in equation 4        the largest locations and estimate the Q-value by averaging
+and policy objective in equation 2.                               the locations of the remaining atoms. By varying the total
+                                                                  number of atoms and the number of dropped ones, we can
+2.3. Distributional Reinforcement Learning with                   flexibly balance between under- and overestimation. The
+     Quantile Regression                                          truncation naturally accounts for the inflated overestimation
+Distributional reinforcement learning focuses on ap-              due to the high return variance: the higher the variance, the
+proximating      the return random variable Z π (s, a) :=         lower the Q-value estimate after truncation.
+P∞ t
+  t=0 γ R (st , at ) where s0 = s, a0 = a and st+1 ∼              To improve the Q-value estimation, we ensemble multiple
+P(·|st , at ), at ∼ π(·|st ), as opposed to approximating the     distributional approximators in the following way. First, we
+expectation of the return, also known as the Q-function,          form a mixture of distributions predicted by N approxima-
+Qπ (s, a) := E [ Z π (s, a) ].                                    tors. Second, we truncate this mixture by removing atoms
+QR-DQN (Dabney et al., 2018b) approximates          the distri-   with the largest locations and estimate the Q-value by av-
+bution Z π (s, a) with Zψ (s, a) := M    1
+                                           PM        m            eraging the locations of the remaining atoms. The order of
+                                             m=1 δ(θψ (s, a)),
+a mixture of atoms—Dirac delta functions at locations             operations—the truncation of the mixture vs. the mixture
+ 1
+θψ                  M
+   (s, a), . . . , θψ (s, a) given by a parametric model θψ :     of truncated distributions—may matter. The truncation of
+                                                                  a mixture removes the largest outliers from the pool of all
+S ×A→R .        M
+                                                                  predictions. Such a truncation may be useful in a hypotheti-
+Parameters ψ are optimized by minimizing the averaged             cal case of one of the critics goes crazy and overestimates
+over the replay 1-Wasserstein distance between Zψ and the         much more than the others. In this case, the truncation of
+temporal difference target distribution Tπ Zψ , where Tπ is       a mixture removes the atoms predicted by this inadequate
+the distributional Bellman operator (Bellemare et al., 2017):     critic. In contrast, the mixture of truncated distributions
+                          D
+                                                                  truncates all critics evenly.
+           Tπ Z(s, a) := R(s, a) + γZ (s0 , a0 ) ,
+                                                           (6)    Our method is different from previous approaches (Zhang
+                  s0 ∼ P (·|s, a) , a0 ∼ π(·|s0 ).
+                                                                  & Yao, 2019; Dabney et al., 2018a) that distorted the critic’s
+As Dabney et al. (2018b) show, this minimization can be           distribution at the policy optimization stage only. We use
+performed by learning quantile locations for fractions τm =       nontruncated critics’ predictions for policy optimization.
+2m−1                                                              And truncate target return distribution at the value learning
+  2M , m ∈ [1..M ] via quantile regression. The quantile
+regression loss, defined for a quantile fraction τ ∈ [0, 1], is   stage. Intuitively, this prevents errors from propagating
+                              h           i                       to other states via TD learning updates and eases policy
+         LτQR (θ) : = EZ̃∼Z ρτ (Z̃ − θ) , where                   optimization.
+                                                           (7)
+            ρτ (u) = u (τ − I(u < 0)) , ∀u ∈ R.                   Next, we present TQC formally and summarize the proce-
+             Controlling Overestimation Bias with Truncated Mixture of Continuous Distributional Quantile Critics
+
+
+
+
+Figure 2. Step-by-step construction of the temporal difference target distribution Y (s, a). First, we compute approximations of the return
+distribution conditioned on s0 and a0 by evaluating N separate target critics. Second, we make a mixture out of the N distributions from
+the previous step. Third, we truncate the right tail of this mixture to obtain atoms z(i) (s0 , a0 ) from equation 11. Fourthly, we add entropy
+term, discount and add reward as in soft Bellman equation.
+
+
+dure in Algorithm 1.                                                      distribution Y (s, a). Equivalently (Dabney et al., 2018b), to
+                                                                          minimize this distance we can approximate the quantiles of
+3.2. Computation of the target distribution                               the target distribution, i.e., learn the locations for quantile
+                                                                          fractions τm = 2m−12M , m ∈ [1..M ].
+We propose to train N approximations Zψ1 , . . . ZψN of the
+policy conditioned return distribution Z π . Each Zψn maps                We approximate the τm , m ∈ [1..M ] quantiles of Y (s, a)
+                                                                                1                    M
+each (s, a) to a probability distribution                                 with θψ n
+                                                                                    (s, a), . . . , θψn
+                                                                                                        (s, a) by minimizing the loss
+                                                                                       JZ (ψn ) = ED,π Lk (st , at ; ψn ) ,
+                                                                                                                           
+                          1 X
+                             M                                                                                                        (13)
+                                   m
+                                            
+            Zψn (s, a) :=       δ θψ  (s, a) ,                   (9)
+                          M m=1     n
+                                                                          over the parameters ψn , where
+                                                                                                      M    kN
+                    1
+supported on atoms θψ                    M
+                        (s, a), . . . , θψ  (s, a) .                                         1 XX H
+                      n                   n                               Lk (s, a; ψn ) =                ρ (yi (s, a) − θψ m
+                                                                                                                               (s, a)).
+                                                                                          kN M m=1 i=1 τm                    n
+
+We train approximations Zψ1 , . . . ZψN on the tempo-
+                                                                                                                                   (14)
+ral difference target distribution Y (s, a).      We con-                                                       m
+                                                                          In this way, each learnable location θψ  (s, a) becomes   de-
+struct it as follows. We pool atoms of distributions                                                             n
+                                                                          pendent on all atoms of the truncated mixture of target
+Zψ1 (s0 , a0 ), . . . , ZψN (s0 , a0 ) into a set
+                                                                          distributions.
+   Z(s0 , a0 ) := {θψ  m
+                           (s0 , a0 ) | n ∈ [1..N ], m ∈ [1..M ]}
+                         n
+                                                                          The policy parameters φ can be optimized to maximize the
+                                                                (10)
+                                                                          entropy penalized estimate of the Q-value by minimizing
+and denote elements of Z(s0 , a0 ) sorted in ascending order
+                                                                          the loss
+by z(i) (s0 , a0 ), with i ∈ [1..M N ].
+                                                                                                                    M,N
+                                                                                         "                                         #
+                                                                                                               1    X
+The kN smallest elements of Z(s0 , a0 ) define atoms                      Jπ (φ) = ED,π α log πφ (a|s) −                  m
+                                                                                                                         θ (s, a) ,
+                                                                                                            N M m,n=1 ψn
+ yi (s, a) := r(s, a) + γ[z(i) (s0 , a0 ) − α log πφ (a0 |s0 )] (11)                                                             (15)
+of the target distribution                                                where s ∼ D, a ∼ πφ (·|s). We use nontruncated estimate
+                                                                          of the Q-value for policy optimization to avoid double trun-
+                                  kN
+                              1 X                                         cation: Z-functions approximate already truncated future
+               Y (s, a) :=          δ (yi (s, a)) .             (12)
+                             kN i=1                                       distribution.
+
+In practice, we always populate Z(s0 , a0 ) with atoms
+predicted by target networks Zψ1 (s0 , a0 ), . . . , ZψN (s0 , a0 ),
+                                                                          4. Experiments
+which are more stable.                                                    First, we compare our method with other possible ways to
+                                                                          mitigate the overestimation bias on a simple MDP, for which
+3.3. Loss functions                                                       we can compute the true Q-function and the optimal policy.
+We minimize the 1-Wasserstein distance between each of                    Second, we quantitatively compare our method with com-
+Zψn (s, a), n ∈ [1..N ] and the temporal difference target                petitors on a standard continuous control benchmark – the
+           Controlling Overestimation Bias with Truncated Mixture of Continuous Distributional Quantile Critics
+
+                 ˆ denotes the stochastic gradient
+Algorithm 1 TQC. ∇
+                                                                      R(a) = f (a) + N (0, σ)        0.5
+  • Initialize policy πφ , critics Zψn , Zψn for n ∈ [1..N ]                                         0.0
+                                                                                                    −0.5
+  • Set replay D = ∅, HT = − dim A, α = 1, β = .005                                                 −1.0       f (a)
+  for each iteration do                                                                             −1.5
+                                                                                                               samples from R(a)
+                                                                                  s0                −2.0
+     for each environment step, until done do                                                           −1.0   −0.5      0.0       0.5   1.0
+       collect transition (st , at , rt , st+1 ) with policy πφ              (a) Diagram                  (b) Reward function
+       D ← D ∪ {(st , at , rt , st+1 )}
+     end for                                                         Figure 3. Infinite horizon MDP with a single state and one-
+     for each gradient step do                                       dimensional action space [−1, 1]. At each step agent receives
+       sample a batch from the replay D                              a stochastic reward R(a) ∼ N (f (a), σ) (see Appendix C for
+       α ← α − λα ∇   ˆ α J(α)                             Eq. (5)   details).
+       φ ← φ − λπ ∇   ˆ φ Jπ (φ)                          Eq. (15)
+       ψn ← ψn − λ Z ∇    ˆ ψ JZ (ψn ), n ∈ [1..N ] Eq. (13)
+                              n
+                                                                     Table 1. Bias correction methods. For simplicity, we omit the state
+       ψ n ← βψn + (1 − β)ψ n , n ∈ [1..N ]
+                                                                     s0 from all arguments.
+     end for
+  end for                                                                         C RITIC TARGET
+                                                                      M ETHOD                                          P OLICY OBJECTIVE
+  return policy πφ , critics Zψn , n ∈ [1..N ].                                   r(a) + γhQ     b 0)
+                                                                                            b OR Zi(a
+
+                                                                                  b = 1 PN Qi (·)
+                                                                                  Q(·)                   1
+                                                                                                           PN
+                                                                      AVG              N   i=1           N    i=1 Qi (a)
+                                                                      MIN         Q(·)
+                                                                                  b = mini Qi (·)        mini Qi (a)
+                                                                                  b = 1 PkN δ z(i) (·)
+                                                                                                        1 PN M
+set of MuJoCo (Todorov et al., 2012) environments im-                 TQC         Z(·) kN   i=1          NM     i=1 z(i) (a)
+plemented in OpenAI Gym (Brockman et al., 2016). The
+details of the experimental setup are in Appendix A.
+Third, we quantify the overestimation bias of TQC in two             TQC —the number of dropped quantiles per network d =
+MuJoCo environments.                                                 M − k. We present the results in Figure 4 with bubbles
+                                                                     of diameter, inversely proportional to the averaged over
+We implement TQC on top of the SAC (Haarnoja et al.,                 the seeds absolute distance between the optimal a∗ and the
+2018b) with auto-tuning of the entropy temperature (Section          arg max of the policy objective.
+2.2). For all MuJoCo experiments, we use N = 5 critic
+networks with three hidden layers of 512 neurons each,               The results (Figure 4) suggest TQC can achieve the lowest
+M = 25 atoms, and the best number of dropped atoms                   variance and the smallest bias of Q-function approximation
+per network d ∈ [0..5], if not stated otherwise. The other           among all the competitors. The variance and the bias corre-
+hyperparameters are the same as in SAC (see Appendix B).             late well with the policy performance, suggesting TQC may
+                                                                     be useful in practice.
+4.1. Single state MDP
+                                                                     4.2. Comparative Evaluation
+In this experiment we evaluate bias correction techniques
+(Table 1) in a single state continuous action infinite horizon       We compare our method with original implementations of
+MDP (Figure 3). We train Q-networks (or Z-networks,                  state of the art algorithms: SAC3 , TrulyPPO4 , and TD35 .
+depending on the method) with two hidden layers of size              For HalfCheetah, Walker, and Ant we evaluate methods on
+50 from scratch on the replay buffer of size 50 for 3000             the extended frame range: until all methods plateaus (5 · 106
+iterations, which is enough for all methods to converge. We          versus usual 3 · 106 ). For Hopper, we extended the range to
+populate the buffer by sampling a reward once for each               3 · 106 steps.
+action from a uniform action grid. At each step of temporal          For our method we selected the number of dropped atoms
+difference learning, we use a policy, which is greedy with           d for each environment independently, based on separate
+respect to the objective in Table 1.                                 evaluation. Best value for Hopper is d = 5, for HalfCheetah
+We define ∆(a) := Q  b π (a) − Qπ (a) as a signed discrepancy        d = 0 and for the rest d = 2.
+between the approximate and the true Q-value. For TQC                Figure 5 shows the learning curves. In Table 2 we report the
+Qb π (a) = EZbπ (a) = 1 PkN z(i) (a). We vary the param-
+                       kN     i=1                                    average and std of 10 seeds. Each seed performance is an av-
+eters controlling the overestimation for each method and
+                                                                        3
+report the robust average (10% of each tail is truncated) over           https://github.com/rail-berkeley/
+100 seeds of Ea∼U (−1,1) [ ∆(a) ] and Vara∼U (−1,1) [∆(a)].          softlearning
+                                                                       4
+                                                                         https://github.com/wangyuhuix/TrulyPPO
+                                                                       5
+For AVG and MIN we vary the number of networks N , for                   https://github.com/sfujim/TD3
+                           Controlling Overestimation Bias with Truncated Mixture of Continuous Distributional Quantile Critics
+
+                                                                                                    0
+ a ∼ U (−1, 1)
+                       d       TQC N=2 M=25 (d dropped quantiles)                                       Table 3. Maximum immediate evaluation score (thousands). Maxi-
+                  1
+                       N       MIN (N Q-networks)                                             1 1       mum was taken over the learning progress and over 10 seeds (see
+             10        N       AVG (N Q-networks)
+                                                                                      2                 Figure 5 for the mean plot). ARS results were taken from (Mania
+                               far from optimal policy                   3
+                               close to optimal policy
+                                                                                          3             et al., 2018). The best return per row is bolded.
+                                                                             2        5
+                                                                   4
+             100                                                                 10
+                      under                         overestimation
+                                                              20
+                                                             50
+                                                                                                                  E NV     ARS-V2- T              SAC         TQC
+                                                               3                                                  H OP        3.909               4.232       4.288
+Var[∆(a)],
+
+
+
+
+                           4
+                                    6                                                                             HC          6.722              16.934      18.908
+                           8            7 6          5
+         10−1         10       16              10                                                                 WAL        11.389               6.900       8.646
+                                    13                                                                            A NT        5.146               7.417       9.011
+                 −101            −100 0       100        101       102           103          104                 H UM       11.600               9.411      13.163
+                                        E[∆(a)],      a ∼ U (−1, 1)
+
+Figure 4. Robust average (10% of each tail is truncated) of bias
+                                                                                                        and observation spaces. In this section and in the Appendix
+and variance of Q-function approximation for different methods:
+TQC , MIN , AVG . See the text for the details about axis labels.
+                                                                                                        we average metrics over four seeds.
+
+                                                                                                        5.1. Design choices evaluation
+Table 2. Average and std of the seed returns (thousands). The best
+average return is bolded, and marked with ∗ if it is the best at level                                  The path from SAC to TQC comprises five modifications:
+0.05 according to the two-sided Welch’s t-test with Bonferroni                                          Q-network size increase (Big), quantile Q-network intro-
+correction for multiple comparison testing.                                                             duction (Quantile), target distribution truncation (Truncate),
+     E NV             T RULY PPO              TD3              SAC                        TQC           atom pooling (Pool), and ensembling. To reveal the effects
+     H OP 1.98(.54)  3.31(.55)  2.86(.58)   3.71(.16)                                                   behind these modifications, we build four methods – the
+     HC   5.78(.62) 15.12(.59) 12.41(5.14) 18.09(.34)*                                                  intermediate steps on the incremental path from SAC to
+     WAL 4.00(.50)   5.11(.52)  5.76(.46)  7.03(.62)*                                                   TQC. Each subsequent method adds the next modification
+     A NT −0.01(.00) 5.68(1.04) 6.16(.93)  8.01(.87)*                                                   from the list to the previous method or changes the order of
+     H UM 5.86(.45)  5.40(.36)  7.76(.46) 9.54(1.18)*                                                   applying modifications. For all modifications, except the fi-
+                                                                                                        nal (ensembling), we use N = 2 networks. In all truncation
+                                                                                                        operations we drop dN atoms in total, where d = 2.
+ erage of 100 last evaluations. We evaluate the performance
+ every 1000 frames as an average of 10 deterministic rollouts.                                          B-SAC is SAC with an increased size of Q-networks (Big
+ As our results suggest, TQC performs consistently better                                               SAC): 3 layers with 512 neurons versus 2 layers of 256
+ than any of the competitors. TQC also improves upon the                                                neurons in SAC. Policy network size does not change.
+ maximal published score on four out of five environments                                               QB-SAC is B-SAC with Quantile distributional networks
+ (Table 3).                                                                                             (Dabney et al., 2018b). This modification changes the
+                                                                                                        form of Q-networks and the loss function, quantile Hu-
+ 4.3. Overestimation in MuJoCo                                                                          ber (equation 8). We adapt the clipped double estimator
+ To quantify the overestimation, we measure distributions of                                            (Fujimoto et al., 2018b) to quantile networks: we recover
+ the discrepancy ∆(s, a) = Q  b π (s, a) − Qπ (s, a) between                                            Q-values from distributions and use atoms of the argmin of
+                                            MC
+ TQC’s and Monte Carlo value estimates. The randomness                                                  Q-values to compute the target distribution Y QB (s, a) :=
+                                                                                                         1
+                                                                                                           PM         m                 m
+ is due to s ∼ ρπ (·), a ∼ π(·|s).                                                                      M     m=1 δ (y (s, a)), where y (s, a) is
+
+ The measurements were performed in the end of the learn-                                                                m
+                                                                                                            r(s, a) + γ[θψ               (s0 , a0 ) − α log πφ (a0 |s0 )]   (16)
+                                                                                                                            j(s0 ,a0 )
+ ing for each method. Figure 6 shows how overestimation
+ decreases with an increase of the number of dropped atoms                                              and j(s0 , a0 ) := arg minn M
+                                                                                                                                    1
+                                                                                                                                              PM       m     0 0
+                                                                                                                                                  m=1 θψ n (s , a ).
+ d. The best performance corresponds to the level of over-
+ estimation close to zero. See Appendix G for discussion                                                TQB-SAC is QB-SAC with individual truncation instead
+ of the details of the experiment and cautions regarding its                                            of min: Zψn is trained to approximate the truncated tem-
+ interpretation.                                                                                        poral difference distribution YnT QB (s, a), which is based
+                                                                                                        on the predictions of the single target network Zψn only.
+ 5. Ablation Study                                                                                      That is, Zψn is trained to approximate YnT QB (s, a) :=
+                                                                                                        1
+                                                                                                          Pk         m                 m
+                                                                                                        k    m=1 δ(yn (s, a)), where yn (s, a) is
+ We ablate TQC on the Humanoid 3D environment, which
+ has the highest resolution power due to its difficulty, and
+ Walker2d—a 2D environment with the largest sizes of action
+                                                                                                                           m
+                                                                                                              r(s, a) + γ[θψ (s0 , a0 ) − α log πφ (a0 |s0 )].              (17)
+                                                                                                                               n
+                                        Controlling Overestimation Bias with Truncated Mixture of Continuous Distributional Quantile Critics
+
+                                                                                                     TQC                 SAC                       TD3                  TrulyPPO
+                         1e3            Hopper                    1e3            HalfCheetah                  1e3                  Walker2d                                          1e3              Ant                               1e3            Humanoid
+                     4                                                                                    8                                                                     10
+
+                                                                                                                                                                                                                              10.0
+                                                                                                                                                                                 8
+Evaluation returns
+
+
+
+
+                                                             15
+                     3                                                                                    6
+                                                                                                                                                                                 6                                                7.5
+
+                     2                                       10                                           4
+                                                                                                                                                                                 4                                                5.0
+
+                     1                                        5                                           2                                                                      2                                                2.5
+
+
+                                                                                                          0                                                                      0                                                0.0
+                         0          1            2      3          0         1     2     3     4     5        0         1          2     3                          4       5        0        1     2     3       4           5         0     2         4    6        8   10
+                                        Frames         1e6                          Frames          1e6                             Frames                              1e6                          Frames                1e6                          Frames             1e6
+
+
+
+
+Figure 5. Average performances of methods on MuJoCo Gym Environments with ± std shaded. Smoothed with a window of 100.
+
+
+                                        Walker2d                                        Humanoid                                                                                TQC N=5               TQC N=2                     PTQB-SAC                 TQB-SAC
+                             1e2                        1e3                  1e2                              1e3
+                                                                  7.5                                                                                                           QB-SAC                B-SAC                       SAC
+                                                                                                                    10
+                         6
+                                                                  7.0
+                                                                         5                                                                                      1e3                   Walker2d                            1e3                 Humanoid
+                                                                                                                                                            8                                                       12
+                         4                                                                                          8
+
+
+
+
+                                                                                                                         Returns
+             Δ(s, a)
+
+
+
+
+                                                                  6.5    0
+                         2                                                                                                                                  7                                                       10
+
+
+
+
+                                                                                                                                       Evaluation returns
+                                                                  6.0                                               6
+                         0                                              −5                                                                                  6
+                                                                                                                                                                                                                      8
+                                                                  5.5                                               4
+                                0  1     2   3    4    5                          0  1     2   3    4    5                                                  5
+                                                                                                                                                                                                                      6
+                               Number of removed atoms, d                        Number of removed atoms, d
+                                                                                                                                                            4
+                                                                                                                                                                                                                      4
+
+                                                                                                                                                            3
+Figure 6. The dependence of the performance (red) and the distri-                                                                                               0       1             2         3      4      5           0             2         4        6      8       10
+                                                                                                                                                                                           Frames             1e6                                     Frames              1e6
+bution of value estimation error (blue) on the number of atoms
+removed d. A blue bar depicts the mean of the distribution. See
+Section 4.3 for details.                                                                                                               Figure 7. Design choices evaluation. N = 2 where isn’t stated
+                                                                                                                                       otherwise, d = 2 and M = 25 where applicable. Smoothed with
+                                                                                                                                       a window of 200, ± std is shaded.
+  PTQB-SAC is TQB-SAC with pooling: Zψn approximates
+  the mixture of (already truncated) YnT QB (s, a), n ∈ [1..N ]:
+                                                                                                                                         5.2. Details on overestimations
+                                                                      k
+                                                                    N X
+                                                         1          X                                                                   TD3 To better understand the interplay between TQC
+                               Y P T QB (s, a) :=                  δ(ynm (s, a)).                                   (18)
+                                                        kN n=1 m=1                                                                      and SAC, we measured the performance of TQC with TD3,
+                                                                                                                                        instead of SAC, as the base algorithm. Appendix E shows
+ TQC = TPQB-SAC is PTQB-SAC with pooling and trunca-                                                                                    that the most of the improvement comes from distributional
+ tion operations swapped. This modification drops the same                                                                              representations, and truncation is responsible for stability.
+ number of atoms as two previous methods, but differs in                                                                                The best performance across variations is well below the
+ which atoms are dropped. TQC drops dN largest from the                                                                                 SOTA, achieved by TQC.
+ union of N critics predictions. While each of PTQB-SAC
+                                                                                                                                        Variations of Clipped Estimator In Appendix F we report
+ and TQB-SAC (no pooling) drops d largest atoms from each
+                                                                                                                                        results on several variations of the Clipped Double Estimator
+ of N critics.
+                                                                                                                                        (Fujimoto et al., 2018b).
+  Ensembling To illustrate the advantage brought by ensem-
+  bling, we include the results for TQC with two and five                                                                                                   1. We varied the number of networks N ∈ [1..5] under
+  Z-networks.                                                                                                                                                  the min to change the intensity of overestimation com-
+ The ablation results (Figure 7) suggest the following. The                                                                                                    pensation. The results in Appendix F.1 shows that the
+ increased network size does not necessarily improve SAC                                                                                                       usual N = 2 delivers best performance.
+ (though some improvement is visible on Walker2d). The                                                                                                      2. We benchmarked the convex sum of min and max over
+ quantile representation improves the score in both environ-                                                                                                   two networks (Fujimoto et al., 2018a) to achieve inter-
+ ments with the most notable improvement on Humanoid.                                                                                                          mediate level of overestimation compensation between
+ Among the three modifications—individual truncation, and                                                                                                      N = 1 and N = 2. Performance tends to improve
+ two orders of applying the pooling and truncation—the TQC                                                                                                     with an increase of the weight in front of min (Ap-
+ is a winner for Humanoid and ”truncate-pooling” modifi-                                                                                                       pendix F.2). That is N = 2 with the usual estimator is
+ cation seems to be better on Walker2d. Overall, truncation                                                                                                    the best.
+ stabilizes results on Walker2d and reduces the seed vari-
+ ance on Humanoid. Finally, the ensembling consistently                                                                                                     3. We bencmarked the same convex sum, as above, but
+ improves results on both environments.                                                                                                                        with Quantile Z-networks, (Q-SAC and QB-SAC). The
+                                   Controlling Overestimation Bias with Truncated Mixture of Continuous Distributional Quantile Critics
+
+                                       TQC d=5       TQC d=4              TQC d=3
+                                       TQC d=2       TQC d=1              TQC d=0                  Table 4. Time measurements (in seconds) of a single training epoch
+                                    Walker2d                                Humanoid
+                     8
+                         1e3
+                                                           12
+                                                                1e3
+                                                                                                   (1000 frames), averaged over 1000 epochs, executed on the Tesla
+                                                                                                   P40 GPU.
+                     7
+Evaluation returns
+
+
+
+
+                                                           10
+
+                     6
+                                                                                                         E NV        SAC     B-SAC       TQC N=2       TQC N=5
+                                                            8
+
+                     5
+                                                                                                     WALKER 2 D       9.5      13.9         14.1          32.4
+                                                            6                                        H UMANOID       10.7      16.5         17.4          36.8
+                     4
+                                                            4
+                     3
+                         0     1    2        3   4   5          0     2     4        6   8   10
+                                        Frames       1e6                        Frames       1e6
+
+
+                                                                                                   improvement saturates at approximately N = 3.
+Figure 8. Varying the number of dropped atoms per critic d. N =
+5 networks, M = 25 atoms. Smoothed with a window of 200, ±                                         The computational overhead incurred by ensembling and
+std is plotted.                                                                                    distributional representations slows learning down. Table 4
+                                                                                                   compares time costs between SAC and TQC modifications.
+
+                             best performance across variations is much closer to
+                             that of the TQC and tends to improve with an increase                 6. Related Work
+                             of the weight in front of min (Appendix F.2). We have                 Distributional perspective Since the introduction of dis-
+                             found that Quantile Z-networks tend to benefit more                   tributional paradigm (see White (1988) and references
+                             from an increase in network size.                                     therein) and its reincarnation for deep reinforcement learn-
+                                                                                                   ing (Bellemare et al., 2017) a great body of research
+ Appendix F.3 includes learning curves for TQC with small                                          emerged. Dabney et al. proposed a method to learn quantile
+ and large N ∈ {2, 5} networks.                                                                    values (or locations) for a uniform grid of fixed (Dabney
+  Overestimation in MuJoCo In Appendix G we discuss                                                et al., 2018b) or sampled (Dabney et al., 2018a) quantile
+  the details of the measurments in Figure 6, as well as com-                                      fractions. Yang et al. (2019) proposed a method to learn
+  pare them with those for the Clipped Estimator. Also we                                          both quantile fractions and quantile values (i.e. locations
+  discuss the problems behind measuring the average overesti-                                      and probabilities of elements in the mixture approximating
+  mation. In Appendix H we provide the evidence for similar                                        the unknown distribution). Choi et al. (2019) used a mixture
+  magnitudes of overestimation for each critic in an ensemble.                                     of Gaussians for approximating the distribution of returns.
+                                                                                                   Most of these works, as well as their influential follow-ups,
+                                                                                                   such as (Hessel et al., 2018), are devoted to the discrete
+  5.3. Sensitivity to hyperparameters
+                                                                                                   control setting.
+ Number of truncated atoms In this experiment we vary
+                                                                                                   The adoption of the distributional paradigm in continuous
+ the number of atoms (per network) to drop in the range
+                                                                                                   control, to the best of our knowledge, starts from D4PG
+ d ∈ [0..5]. The total number of atoms dropped is dN . We fix
+                                                                                                   (Barth-Maron et al., 2018)—a distributed distributional off-
+ the number of atoms for each Q-network to M = 25. The
+                                                                                                   policy algorithm building on C51 (Bellemare et al., 2017).
+ results (Figure 8) show that (1) truncation is essential and
+                                                                                                   Recently, the distributional paradigm was adopted in dis-
+ (2) there is an optimal number of dropped atoms (i.e., d = 2
+                                                                                                   tributed continuous control for robotic grasping (Bodnar
+ or d = 3). Note, that the dependence of the performance on
+                                                                                                   et al., 2019). The authors proposed Q2-Opt as a collective
+ d may differ across environments. Walker and Humanoid
+                                                                                                   name for two variants: based on QR-DQN (Dabney et al.,
+ require d ≈ 2 , while HalfCheetah benefits from d < 2, and
+                                                                                                   2018b), and on IQN (Dabney et al., 2018a). In contrast to
+ Hopper benefits from d > 2 (Appendix D.3).
+                                                                                                   D4PG and Q2-Opt, we focus on the usual, non-distributed
+ Total number of atoms In this experiment we vary the                                              setting and modify the target on which the critic is trained.
+ total number of atoms M ∈ {10, 15, 25, 35, 50} and adjust
+                                                                                                   A number of works develop exploration methods based on
+ the number of dropped quantiles to keep the truncation
+                                                                                                   the quantile form of value-function. DLTV (Mavrin et al.,
+ ratio approximately constant. The results in Appendix D.2
+                                                                                                   2019) uses variability of the quantile distribution in the
+ suggest this parameter does not have much influence, except
+                                                                                                   exploration bonus. QUOTA (Zhang & Yao, 2019)—the
+ for the case of very small M , such as 10. For M ≥ 15
+                                                                                                   option-based modification of QR-DQN—partitions a range
+ learning curves are indistinguishable.
+                                                                                                   of quantiles into contiguous windows and trains a separate
+  Number of Z-networks In this experiment we vary the                                              intra-option policy to maximize an average of quantiles in
+  number of Z-networks N ∈ {1, 2, 3, 5, 10}. The results                                           each of the windows. Our work proposes an alternative
+  in Appendix D.1) suggest that (1) a single network is con-                                       method for critic training, which is unrelated to the explo-
+  sistently inferior to larger ensembles and (2) performance                                       ration problem.
+           Controlling Overestimation Bias with Truncated Mixture of Continuous Distributional Quantile Critics
+
+Most importantly, our work differs from the research out-       schel et al., 2017), the linear combination between min and
+lined above in our aim to control the overestimation bias by    max over the pool of Q-networks (Li & Hou, 2019; Kumar
+leveraging quantile representation of a critic network.         et al., 2019), or the random mixture of predictions from the
+                                                                pool (Agarwal et al., 2019). Buckman et al. (2018) reported
+Overestimation bias The overestimation bias is a long-          the reduction in overestimation originating from ensembling
+standing topic in several research areas. It is known as the    in model-based learning.
+max-operator bias in statistics (D’Eramo et al., 2017) and as   In continuous control, Fujimoto et al. (2018b) proposed the
+the ”winner’s curse” in economics (Smith & Winkler, 2006;       TD3 algorithm, taking the min over two approximators of
+Thaler, 2012).                                                  Q-function to reduce the overestimation bias. Later, for
+The statistical community studies estimators of the maxi-       discrete control Lan et al. (2020) developed a MaxMin Q-
+mum expected value of a set of independent random vari-         learning, taking the min over more than two Q-functions.
+ables. The simplest estimator—the maximum over sample           We build upon the minimization idea of Fujimoto et al.
+means, Maximum Estimator (ME)—is biased positively,             (2018b) and, following Lan et al. (2020) use multiple ap-
+while for many distributions, such as Gaussian, an unbiased     proximators.
+estimator does not exist (Ishwaei D et al., 1985). The Dou-     Our work differs in that we do not propose to control the bias
+ble Estimator (DE) (Stone, 1974; Van Hasselt, 2013) uses        by choosing between multiple approximators or weighting
+cross-validation to decorrelate the estimation of the argmax    them. For the first time, we propose to successfully control
+and of the value for that argmax. He & Guo (2019) proposed      the overestimation even for a single approximator and use
+a coupled estimator as an extension of DE to the case of        ensembling only to improve the performance further.
+partially overlapping cross-validation folds. Many works
+have aimed at alleviating the negative bias of DE, which in
+absolute value can be even larger than that of ME. D’Eramo
+                                                                7. Conclusion and Future Work
+et al. (2016) assumed the Gaussian distribution for the sam-    In this work, we propose to control the overestimation bias
+ple mean and proposed Weighted Estimator (WE) with a            on the basis of aleatoric uncertainty. The method we propose
+bias in between of that for ME and DE. Imagaw & Kaneko          comprises three essential ideas: distributional representa-
+(2017) improved WE by using UCB for weights compu-              tions, truncation of a distribution, and ensembling.
+tation. D’Eramo et al. (2017) assumed a certain spatial
+correlation and extended WE to continuous sets of random        Simulations reveal favorable properties of our method: low
+variables. The problem of overestimation has also been          expected variance of the approximation error as well as the
+discussed in the context of optimal stopping and sequential     fine control over the under- and overestimation. The excep-
+testing (Kaufmann et al., 2018).                                tional results on the standard continuous control benchmark
+                                                                suggest that distributional representations may be useful for
+The reinforcement learning community became interested in       controlling the overestimation bias.
+the bias since the work of Thrun & Schwartz (1993), who
+attributed a systematic overestimation to the generalization    Since little is known about the connection between aleatoric
+error. The authors proposed multiple ways to alleviate the      uncertainty and overestimation, we see its investigation as
+problem, including (1) bias compensation with additive          an exciting avenue for future work.
+pseudo costs and (2) underestimation (e.g., in the uncertain
+areas). The underestimation concept became much more            8. Acknowledgements
+prominent, while the adoption of ”additive compensation” is
+quite limited to date (Patnaik & Anwar, 2008; Lee & Powell,     We would like to thank Artem Sobolev, Arsenii Ashukha,
+2012).                                                          Oleg Ivanov and Dmitry Nikulin for their comments and
+                                                                suggestions regarding the early versions of the manuscript.
+Van Hasselt (2010) proposed Double Estimation in Q-             We also thank the anonymous reviewers for their feedback.
+learning, which was subsequently adapted to neural net-
+works as Double DQN Van Hasselt et al. (2015). Subse-           This research was supported in part by the Russian Science
+quently, (Zhang et al., 2017) and Lv et al. (2019) introduced   Foundation grant no. 19-71-30020.
+the Weighted Estimator in the reinforcement learning com-
+munity.                                                         References
+Another approach against overestimation and overall Q-          Agarwal, R., Schuurmans, D., and Norouzi, M. Striving
+function quality improvement is based on the idea of aver-        for simplicity in off-policy deep reinforcement learning.
+aging or ensembling. Embodiments of this approach are             arXiv preprint arXiv:1907.04543, 2019.
+based on dropout Anschel et al. (2017), employing previous
+Q-function approximations (Ghavamzadeh et al., 2011; An-        Anschel, O., Baram, N., and Shimkin, N. Averaged-dqn:
+           Controlling Overestimation Bias with Truncated Mixture of Continuous Distributional Quantile Critics
+
+  Variance reduction and stabilization for deep reinforce-       of Proceedings of Machine Learning Research, pp. 1587–
+  ment learning. In Proceedings of the 34th International        1596, Stockholmsmässan, Stockholm Sweden, 10–15 Jul
+  Conference on Machine Learning-Volume 70, pp. 176–             2018b. PMLR. URL http://proceedings.mlr.
+  185. JMLR. org, 2017.                                          press/v80/fujimoto18a.html.
+Barth-Maron, G., Hoffman, M. W., Budden, D., Dabney,           Ghavamzadeh, M., Kappen, H. J., Azar, M. G., and
+  W., Horgan, D., Muldal, A., Heess, N., and Lillicrap, T.       Munos, R. Speedy q-learning. In Shawe-Taylor, J.,
+  Distributed distributional deterministic policy gradients.     Zemel, R. S., Bartlett, P. L., Pereira, F., and Weinberger,
+  arXiv preprint arXiv:1804.08617, 2018.                         K. Q. (eds.), Advances in Neural Information Process-
+Bellemare, M. G., Dabney, W., and Munos, R. A Distri-            ing Systems 24, pp. 2411–2419. Curran Associates, Inc.,
+  butional Perspective on Reinforcement Learning. arXiv          2011. URL http://papers.nips.cc/paper/
+  e-prints, art. arXiv:1707.06887, Jul 2017.                    4251-speedy-q-learning.pdf.
+
+Bodnar, C., Li, A., Hausman, K., Pastor, P., and Kalakr-       Haarnoja, T., Zhou, A., Abbeel, P., and Levine, S. Soft
+  ishnan, M. Quantile qt-opt for risk-aware vision-based         actor-critic: Off-policy maximum entropy deep reinforce-
+  robotic grasping. arXiv preprint arXiv:1910.02787, 2019.       ment learning with a stochastic actor. arXiv preprint
+                                                                 arXiv:1801.01290, 2018a.
+Brockman, G., Cheung, V., Pettersson, L., Schneider, J.,
+  Schulman, J., Tang, J., and Zaremba, W. Openai gym.          Haarnoja, T., Zhou, A., Hartikainen, K., Tucker, G., Ha,
+  arXiv preprint arXiv:1606.01540, 2016.                         S., Tan, J., Kumar, V., Zhu, H., Gupta, A., Abbeel, P.,
+Buckman, J., Hafner, D., Tucker, G., Brevdo, E., and Lee,        et al. Soft actor-critic algorithms and applications. arXiv
+  H. Sample-efficient reinforcement learning with stochas-       preprint arXiv:1812.05905, 2018b.
+  tic ensemble value expansion. In Advances in Neural
+  Information Processing Systems, pp. 8224–8234, 2018.         He, M. and Guo, H. Interleaved q-learning with partially
+                                                                 coupled training process. In Proceedings of the 18th In-
+Choi, Y., Lee, K., and Oh, S. Distributional deep rein-          ternational Conference on Autonomous Agents and Mul-
+  forcement learning with a mixture of gaussians. In 2019        tiAgent Systems, pp. 449–457. International Foundation
+  International Conference on Robotics and Automation            for Autonomous Agents and Multiagent Systems, 2019.
+ (ICRA), pp. 9791–9797. IEEE, 2019.
+                                                               Hessel, M., Modayil, J., Van Hasselt, H., Schaul, T., Ostro-
+Dabney, W., Ostrovski, G., Silver, D., and Munos, R. Im-         vski, G., Dabney, W., Horgan, D., Piot, B., Azar, M., and
+  plicit quantile networks for distributional reinforcement      Silver, D. Rainbow: Combining improvements in deep re-
+  learning. arXiv preprint arXiv:1806.06923, 2018a.              inforcement learning. In Thirty-Second AAAI Conference
+Dabney, W., Rowland, M., Bellemare, M. G., and Munos,            on Artificial Intelligence, 2018.
+  R. Distributional reinforcement learning with quantile re-
+  gression. In Thirty-Second AAAI Conference on Artificial     Imagaw, T. and Kaneko, T. Estimating the maximum ex-
+  Intelligence, 2018b.                                           pected value through upper confidence bound of likeli-
+                                                                 hood. In 2017 Conference on Technologies and Applica-
+D’Eramo, C., Nuara, A., Pirotta, M., and Restelli, M. Es-        tions of Artificial Intelligence (TAAI), pp. 202–207. IEEE,
+  timating the maximum expected value in continuous re-          2017.
+  inforcement learning problems. In Thirty-First AAAI
+  Conference on Artificial Intelligence, 2017.                 Ishwaei D, B., Shabma, D., and Krishnamoorthy, K. Non-
+                                                                  existence of unbiased estimators of ordered parameters.
+D’Eramo, C., Restelli, M., and Nuara, A. Estimating max-         Statistics: A Journal of Theoretical and Applied Statistics,
+  imum expected value through gaussian approximation.            16(1):89–95, 1985.
+  In International Conference on Machine Learning, pp.
+  1032–1040, 2016.                                             Kaufmann, E., Koolen, W. M., and Garivier, A. Sequential
+Fujimoto, S., Meger, D., and Precup, D. Off-policy deep re-      test for the lowest mean: From thompson to murphy
+  inforcement learning without exploration. arXiv preprint       sampling. In Advances in Neural Information Processing
+  arXiv:1812.02900, 2018a.                                       Systems, pp. 6332–6342, 2018.
+
+Fujimoto, S., van Hoof, H., and Meger, D. Addressing           Kumar, A., Fu, J., Soh, M., Tucker, G., and Levine, S.
+  function approximation error in actor-critic methods. In       Stabilizing off-policy q-learning via bootstrapping error
+  Dy, J. and Krause, A. (eds.), Proceedings of the 35th In-      reduction. In Advances in Neural Information Processing
+  ternational Conference on Machine Learning, volume 80         Systems, pp. 11761–11771, 2019.
+           Controlling Overestimation Bias with Truncated Mixture of Continuous Distributional Quantile Critics
+
+Lan, Q., Pan, Y., Fyshe, A., and White, M. Maxmin q-             Van Hasselt, H. Double q-learning. In Advances in Neural
+  learning: Controlling the estimation bias of q-learning. In      Information Processing Systems, pp. 2613–2621, 2010.
+  International Conference on Learning Representations,
+  2020. URL https://openreview.net/forum?                        Van Hasselt, H. Estimating the maximum expected value:
+  id=Bkg0u3Etwr.                                                   an analysis of (nested) cross validation and the maximum
+                                                                   sample average. arXiv preprint arXiv:1302.7175, 2013.
+Lee, D. and Powell, W. B. An intelligent battery controller
+  using bias-corrected q-learning. In Twenty-Sixth AAAI          Van Hasselt, H., Guez, A., and Silver, D. Deep Reinforce-
+  Conference on Artificial Intelligence, 2012.                     ment Learning with Double Q-learning. arXiv e-prints,
+                                                                   art. arXiv:1509.06461, Sep 2015.
+Li, Z. and Hou, X. Mixing update q-value for deep reinforce-
+   ment learning. In 2019 International Joint Conference         White, D. Mean, variance, and probabilistic criteria in
+   on Neural Networks (IJCNN), pp. 1–6. IEEE, 2019.               finite markov decision processes: a review. Journal of
+                                                                  Optimization Theory and Applications, 56(1):1–29, 1988.
+Lv, P., Wang, X., Cheng, Y., and Duan, Z. Stochastic double
+  deep q-network. IEEE Access, 7:79446–79454, 2019.              Yang, D., Zhao, L., Lin, Z., Qin, T., Bian, J., and Liu, T.-Y.
+  ISSN 2169-3536. doi: 10.1109/ACCESS.2019.2922706.                Fully parameterized quantile function for distributional
+                                                                   reinforcement learning. In Advances in Neural Informa-
+Mania, H., Guy, A., and Recht, B. Simple random search             tion Processing Systems, pp. 6190–6199, 2019.
+ provides a competitive approach to reinforcement learn-
+ ing. arXiv preprint arXiv:1803.07055, 2018.                     Zhang, S. and Yao, H. Quota: The quantile option archi-
+                                                                   tecture for reinforcement learning. In Proceedings of the
+Mavrin, B., Yao, H., Kong, L., Wu, K., and Yu, Y. Distri-          AAAI Conference on Artificial Intelligence, volume 33,
+ butional reinforcement learning for efficient exploration.        pp. 5797–5804, 2019.
+ In Chaudhuri, K. and Salakhutdinov, R. (eds.), Proceed-
+ ings of the 36th International Conference on Machine            Zhang, Z., Pan, Z., and Kochenderfer, M. J. Weighted
+ Learning, volume 97 of Proceedings of Machine Learn-              double q-learning. In IJCAI, pp. 3455–3461, 2017.
+ ing Research, pp. 4424–4434, Long Beach, California,
+ USA, 09–15 Jun 2019. PMLR.
+Mnih, V., Kavukcuoglu, K., Silver, D., Graves, A.,
+ Antonoglou, I., Wierstra, D., and Riedmiller, M. Playing
+ atari with deep reinforcement learning. arXiv preprint
+ arXiv:1312.5602, 2013.
+Patnaik, K. and Anwar, S. Q learning in context of approx-
+  imation spaces. Contemporary Engineering Sciences, 1
+  (1):41–49, 2008.
+Smith, J. E. and Winkler, R. L. The optimizer’s curse:
+  Skepticism and postdecision surprise in decision analysis.
+ Management Science, 52(3):311–322, 2006.
+Stone, M. Cross-validatory choice and assessment of statis-
+  tical predictions. Journal of the Royal Statistical Society:
+  Series B (Methodological), 36(2):111–133, 1974.
+Thaler, R. The winner’s curse: Paradoxes and anomalies of
+  economic life. Simon and Schuster, 2012.
+Thrun, S. and Schwartz, A. Issues in using function approx-
+  imation for reinforcement learning. In Proceedings of the
+  1993 Connectionist Models Summer School Hillsdale, NJ.
+  Lawrence Erlbaum, 1993.
+Todorov, E., Erez, T., and Tassa, Y. Mujoco: A physics
+  engine for model-based control. In 2012 IEEE/RSJ Inter-
+  national Conference on Intelligent Robots and Systems,
+  pp. 5026–5033. IEEE, 2012.
+

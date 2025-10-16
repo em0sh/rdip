@@ -202,8 +202,10 @@ def train(total_steps=5_000_000, seed=0):
                         writer.add_scalar("train/log_prob", stats["logp"], total_steps)
         actor = algo.actor.cpu().eval()
         scripted = torch.jit.script(actor)
-        scripted.save("rdip_tqc_actor.pt")
-        print("Saved policy to rdip_tqc_actor.pt")
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        model_name = f"rdip_tqc_actor_{timestamp}.pt"
+        scripted.save(model_name)
+        print(f"Saved policy to {model_name}")
     finally:
         if executor:
             executor.shutdown(wait=True)
@@ -211,4 +213,4 @@ def train(total_steps=5_000_000, seed=0):
 
 
 if __name__ == "__main__":
-    train(total_steps=5_000_000, seed=42)
+    train(total_steps=6_500_000, seed=42)

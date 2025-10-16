@@ -1,34 +1,21 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.DS_Store
-runs/*
-runs/
+*.py[cod]
 
+# Virtual environments
+.venv/
 
-# logs
-runs/
-*.tfevents*
+# IDE / OS metadata
+.DS_Store
+*.swp
+.idea/
+.vscode/
 
-# logs
-runs/
-*.tfevents*
-
-# logs
+# Logs and checkpoints
 runs/
 *.tfevents*
 
-# logs
-runs/
-*.tfevents*
-
-# logs
-runs/
-*.tfevents*
-
-# logs
-runs/
-*.tfevents*
-runs_old/
-
+# Misc
 sync.sh
 
-papers/
+# Ignore generated docs or temporary files here if needed

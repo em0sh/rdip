@@ -1,3 +1,11 @@
+# Purpose
+This is an implementation of "Sim-to-Real Reinforcement Learning for a Rotary Double-Inverted Pendulum Based on a Mathematical Model" from Machines 2025, 13, 186. Paper here: https://www.mdpi.com/2227-7390/13/12/1996
+
+All hardware design and software was done from scratch independent of the researchers.
+
+# Current State of Hardware Design - 10/16/2025
+![Current State of Hardware Design](CAD.png)
+
 # RDIP TQC Training
 
 This project recreates the **“Sim-to-Real Reinforcement Learning for a Rotary Double-Inverted Pendulum”** controller using the Truncated Quantile Critics (TQC) algorithm. The repo contains:
@@ -6,8 +14,9 @@ This project recreates the **“Sim-to-Real Reinforcement Learning for a Rotary 
 - `rdip_env.py`: rotary double-inverted pendulum simulator derived directly from the paper.
 - `tqc.py`: TQC implementation (actor, critics, replay buffer).
 - `animate_latest_episode.py`: visualizes saved episodes as 2D animations.
+- `interactive_sim.py`: interactive viewer for TorchScript actors with disturbance injection.
 
-The instructions below walk through installation, running training, monitoring progress, animating episodes, and using the exported actor (`rdip_tqc_actor.pt`).
+The instructions below walk through installation, running training, monitoring progress, animating episodes, using the interactive simulator, and using the exported actors (`rdip_tqc_actor_<timestamp>.pt`).
 
 ---
 
@@ -46,11 +55,11 @@ python train_rdip_tqc.py
 ```
 
 Key defaults:
-- `total_steps=5_000_000` (≈5,000 episodes, 10 s each at 10 ms control intervals).
+- `total_steps=6_500_000` (≈6,500 episodes, 10 s each at 10 ms control intervals).
 - Episode transitions cycle through equilibrium modes EP0–EP3 to match the paper.
 - TensorBoard logs write to `runs/TQC_<timestamp>_seed<seed>/`.
 - Each completed episode is archived as `episode_XXXXX.npz` for later visualization.
-- The latest policy exports to `rdip_tqc_actor.pt` (overwritten on each run).
+- The latest policy exports to `rdip_tqc_actor_<timestamp>.pt` (timestamped TorchScript actor).
 
 Override any training argument by calling `train(total_steps=..., seed=...)` within a short script or REPL.
 
@@ -100,13 +109,13 @@ Navigate to the printed URL (typically http://localhost:6006). You can track:
 
 ---
 
-## 5. Using the Exported Policy (`rdip_tqc_actor.pt`)
+## 5. Using the Exported Policy (`rdip_tqc_actor_<timestamp>.pt`)
 
 At the end of each training run the script saves the actor network as a TorchScript file:
 
 ```bash
 source .venv/bin/activate
-python train_rdip_tqc.py  # produces rdip_tqc_actor.pt
+python train_rdip_tqc.py  # produces rdip_tqc_actor_<timestamp>.pt
 ```
 
 To load and run the policy:
@@ -115,7 +124,7 @@ To load and run the policy:
 import torch
 from rdip_env import RDIPEnv
 
-actor = torch.jit.load("rdip_tqc_actor.pt")
+actor = torch.jit.load("rdip_tqc_actor_20251012-231308.pt")
 actor.eval()
 
 env = RDIPEnv(seed=0)
@@ -126,5 +135,30 @@ with torch.no_grad():
 
 You can step the simulation manually or integrate the actor into a control stack. For deployment, ensure the observation ordering matches `RDIPEnv._obs()` and feed the resulting angular acceleration into hardware or a higher fidelity simulator.
 
-If you wish to keep multiple checkpoints, copy or rename `rdip_tqc_actor.pt` after each run.
+If you wish to keep multiple checkpoints, simply keep the timestamped `.pt` files that training produces.
 
+---
+
+## 6. Interactive Simulation
+![Simulator](sim.png)
+
+Use `interactive_sim.py` to explore trained policies with visual feedback and disturbance injection:
+
+```bash
+source .venv/bin/activate
+python interactive_sim.py --actor rdip_tqc_actor_<timestamp>.pt
+```
+
+Highlights:
+- Reset / Pause / Step buttons manage playback.
+- EP radio buttons change the target equilibrium context fed to the policy.
+- The impulse slider applies a one-step angular acceleration to the second link (β̈).
+- Text boxes set the initial angles / velocities for the next reset.
+
+If Matplotlib complains about cache directories, set `MPLCONFIGDIR`, e.g.:
+
+```bash
+MPLCONFIGDIR=/tmp/mpl python interactive_sim.py --actor rdip_tqc_actor_<timestamp>.pt
+```
+
+The simulator assumes the TorchScript actor takes the observation tensor only; adjust the call if your export returns additional values (e.g., `(action, log_prob)`).

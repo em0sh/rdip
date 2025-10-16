@@ -96,7 +96,7 @@ class InteractiveSimulator:
 
     def _build_figure(self):
         self.fig, (self.ax_pend, self.ax_angles) = plt.subplots(1, 2, figsize=(12, 6))
-        plt.subplots_adjust(left=0.08, right=0.78, bottom=0.25)
+        plt.subplots_adjust(left=0.08, right=0.65, bottom=0.3)
 
         self.ax_pend.set_title("RDIP (projected)")
         self.ax_pend.set_xlabel("Projected horizontal (m)")
@@ -113,51 +113,44 @@ class InteractiveSimulator:
         self.ax_angles.legend(loc="upper right")
 
         # Controls
-        btn_reset_ax = plt.axes([0.82, 0.88, 0.15, 0.05])
-        btn_pause_ax = plt.axes([0.82, 0.82, 0.15, 0.05])
-        btn_step_ax = plt.axes([0.82, 0.76, 0.15, 0.05])
-        radio_ax = plt.axes([0.82, 0.55, 0.15, 0.18])
+        btn_reset_ax = plt.axes([0.70, 0.88, 0.26, 0.05])
+        btn_pause_ax = plt.axes([0.70, 0.82, 0.26, 0.05])
+        btn_step_ax = plt.axes([0.70, 0.76, 0.26, 0.05])
+        radio_ax = plt.axes([0.70, 0.54, 0.26, 0.20])
 
-        slider_ax = plt.axes([0.82, 0.48, 0.15, 0.03])
-        btn_apply_pos_ax = plt.axes([0.82, 0.43, 0.07, 0.04])
-        btn_apply_neg_ax = plt.axes([0.90, 0.43, 0.07, 0.04])
-        disturbance_info_ax = plt.axes([0.82, 0.38, 0.15, 0.03])
+        slider_label_ax = plt.axes([0.70, 0.50, 0.26, 0.03])
+        slider_ax = plt.axes([0.70, 0.47, 0.26, 0.03])
+        btn_apply_ax = plt.axes([0.70, 0.42, 0.26, 0.045])
 
         textbox_axes = {
-            "theta": plt.axes([0.82, 0.34, 0.15, 0.035]),
-            "alpha": plt.axes([0.82, 0.30, 0.15, 0.035]),
-            "beta": plt.axes([0.82, 0.26, 0.15, 0.035]),
-            "theta_dot": plt.axes([0.82, 0.22, 0.15, 0.035]),
-            "alpha_dot": plt.axes([0.82, 0.18, 0.15, 0.035]),
-            "beta_dot": plt.axes([0.82, 0.14, 0.15, 0.035]),
+            "theta": plt.axes([0.70, 0.34, 0.26, 0.035]),
+            "alpha": plt.axes([0.70, 0.30, 0.26, 0.035]),
+            "beta": plt.axes([0.70, 0.26, 0.26, 0.035]),
+            "theta_dot": plt.axes([0.70, 0.22, 0.26, 0.035]),
+            "alpha_dot": plt.axes([0.70, 0.18, 0.26, 0.035]),
+            "beta_dot": plt.axes([0.70, 0.14, 0.26, 0.035]),
         }
 
         self.btn_reset = Button(btn_reset_ax, "Reset")
         self.btn_pause = Button(btn_pause_ax, "Pause")
         self.btn_step = Button(btn_step_ax, "Step")
         self.radio_ep = RadioButtons(radio_ax, ("EP0", "EP1", "EP2", "EP3"), active=0)
-        self.slider_dist = Slider(
-            slider_ax,
-            "Impulse (rad/s²)",
-            -self.disturbance_limit,
-            self.disturbance_limit,
-            valinit=0.0,
-        )
-        self.btn_apply_pos = Button(btn_apply_pos_ax, "Inject +")
-        self.btn_apply_neg = Button(btn_apply_neg_ax, "Inject -")
-        disturbance_note = (
-            "Applies a single-step\nangular acceleration\nimpulse (additive)"
-        )
-        disturbance_info_ax.axis("off")
-        disturbance_info_ax.text(
+        slider_label_ax.axis("off")
+        slider_label_ax.text(
             0.0,
             0.5,
-            disturbance_note,
-            fontsize=8,
-            verticalalignment="center",
-            transform=disturbance_info_ax.transAxes,
+            "Impulse (rad/s²) – add to β̈",
+            fontsize=9,
+            transform=slider_label_ax.transAxes,
         )
-
+        self.slider_dist = Slider(
+            slider_ax,
+            "",
+            -50 * self.disturbance_limit,
+            50 * self.disturbance_limit,
+            valinit=0.0,
+        )
+        self.btn_apply = Button(btn_apply_ax, "Inject Impulse")
         self.textboxes = {
             name: TextBox(axis, name.replace("_", " "), initial="0.0")
             for name, axis in textbox_axes.items()
@@ -167,8 +160,7 @@ class InteractiveSimulator:
         self.btn_pause.on_clicked(self.handle_pause)
         self.btn_step.on_clicked(self.handle_step)
         self.radio_ep.on_clicked(self.handle_ep_change)
-        self.btn_apply_pos.on_clicked(self.handle_apply_positive)
-        self.btn_apply_neg.on_clicked(self.handle_apply_negative)
+        self.btn_apply.on_clicked(self.handle_apply)
 
         self.anim = FuncAnimation(
             self.fig,
@@ -213,11 +205,8 @@ class InteractiveSimulator:
     def handle_ep_change(self, label: str):
         self.target_ep = int(label[-1])
 
-    def handle_apply_positive(self, _event):
+    def handle_apply(self, _event):
         self.pending_disturbance += self.slider_dist.val
-
-    def handle_apply_negative(self, _event):
-        self.pending_disturbance -= self.slider_dist.val
 
     def _append_history_sample(self):
         self.time_hist.append(self.elapsed_time)
@@ -234,20 +223,24 @@ class InteractiveSimulator:
     def _simulation_step(self):
         self.env.ep = self.target_ep
         obs = self.env._obs().copy()
-        obs[-1] = float(self.target_ep)
 
         obs_tensor = torch.from_numpy(obs).to(self.device).unsqueeze(0)
         with torch.no_grad():
-            actor_out = self.actor(obs_tensor, deterministic=False, with_logprob=False)
+            actor_out = self.actor(obs_tensor)
         if isinstance(actor_out, (tuple, list)):
             action_tensor = actor_out[0]
         else:
             action_tensor = actor_out
         action = float(action_tensor.squeeze().cpu().item())
-        action = np.clip(action + self.pending_disturbance, -self.env.max_action, self.env.max_action)
+        action = np.clip(action, -self.env.max_action, self.env.max_action)
+
+        impulse = self.pending_disturbance
         self.pending_disturbance = 0.0
 
+        # Apply action (theta acceleration) plus optional impulse on the last link (beta)
         self.env.step(action)
+        if impulse != 0.0:
+            self.env.x[5] += float(impulse * self.env.control_dt)
         self.elapsed_time += self.env.control_dt
         self._append_history_sample()
 
