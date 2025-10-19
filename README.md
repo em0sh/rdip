@@ -3,8 +3,11 @@ This is an implementation of "Sim-to-Real Reinforcement Learning for a Rotary Do
 
 All hardware design and software was done from scratch independent of the researchers.
 
-# Current State of Hardware Design - 10/16/2025
+# Hardware
 ![Current State of Hardware Design](CAD.png)
+
+# CAD
+The CAD of the assembly is stored in a single .STP file in the CAD/ directory.
 
 # RDIP TQC Training
 
