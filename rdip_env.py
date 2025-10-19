@@ -30,10 +30,11 @@ EP_TARGETS = {
 }
 
 def wrap_pi(a):
-    # wrap angle to [-pi, pi]
-    a = (a + math.pi) % (2*math.pi) - math.pi
+    """Wrap angle(s) to [-pi, pi] so trig features stay continuous."""
+    a = (a + math.pi) % (2 * math.pi) - math.pi
     return a
 
+# Flattened parameter vector used when calling the numba kernels.
 PARAM_VEC_TEMPLATE = np.array([
     PARAMS['M1'], PARAMS['M2'],
     PARAMS['Ixx1'], PARAMS['Ixx2'],
@@ -50,6 +51,7 @@ PARAM_VEC_TEMPLATE = np.array([
 if _NUMBA_AVAILABLE:
     @njit(cache=True, fastmath=True, nogil=True)
     def _accelerations_numba(x, u, p):
+        """Numba-accelerated link accelerations for [alpha_ddot, beta_ddot]."""
         theta, alpha, beta, thd, ad, bd = x
         M1, M2 = p[0], p[1]
         Ixx1, Ixx2 = p[2], p[3]
@@ -111,6 +113,7 @@ if _NUMBA_AVAILABLE:
 
     @njit(cache=True, fastmath=True, nogil=True)
     def _f_numba(x, u, p):
+        """Numba wrapper that returns state derivatives for RK4 integration."""
         addot, bddot = _accelerations_numba(x, u, p)
         res = np.empty(6, dtype=np.float64)
         res[0] = x[3]
@@ -123,6 +126,7 @@ if _NUMBA_AVAILABLE:
 
     @njit(cache=True, fastmath=True, nogil=True)
     def _rk4_numba(x, u, h, p):
+        """Numba implementation of RK4 integrator with fixed step size h."""
         k1 = _f_numba(x, u, p)
         k2 = _f_numba(x + 0.5 * h * k1, u, p)
         k3 = _f_numba(x + 0.5 * h * k2, u, p)
@@ -133,6 +137,7 @@ else:
 
 
 def _accelerations_py(x, u, params):
+    """Pure-Python fallback for computing [alpha_ddot, beta_ddot] acceleration."""
     theta, alpha, beta, thd, ad, bd = x
     p = params
     c1, c2 = p['c1'], p['c2']
@@ -147,6 +152,7 @@ def _accelerations_py(x, u, params):
     Ixz1, Ixz2 = p['Ixz1'], p['Ixz2']
     g = p['g']
 
+    # Intermediate terms mirror notation in the reference paper.
     h1 = M1*l1*r1 + M2*L1*(R1 + r2) - Ixz1
     h2 = M2*l2*(R1 + r2) - Ixz2
     h3 = Ixx1 + M1*l1*l1 + M2*L1*L1
@@ -180,6 +186,7 @@ def _accelerations_py(x, u, params):
           + c2*bd
           - thd2*(0.5*h9*math.sin(2*(alpha+beta)) + 0.5*h4*(math.sin(2*(alpha+beta)) - sb)))
 
+    # Determinant of inertia matrix (must stay positive).
     phi = m11*m22 - m12*m12
     addot = ((-m22*n1 + m12*n2)*u + (-m22*d1 + m12*d2))/phi
     bddot = (((m12)*n1 - m11*n2)*u + (m12*d1 - m11*d2))/phi
@@ -187,11 +194,13 @@ def _accelerations_py(x, u, params):
 
 
 def _f_py(x, u, params):
+    """Return state derivative vector for RK4 when Numba is unavailable."""
     addot, bddot = _accelerations_py(x, u, params)
     return np.array([x[3], x[4], x[5], u, addot, bddot], dtype=np.float64)
 
 
 def _rk4_py(x, u, h, params):
+    """Classic 4th-order Runge-Kutta integration step."""
     k1 = _f_py(x, u, params)
     k2 = _f_py(x + 0.5*h*k1, u, params)
     k3 = _f_py(x + 0.5*h*k2, u, params)
@@ -206,7 +215,9 @@ class RDIPEnv:
     Internal integration dt=0.001s (1 ms), control step = 0.01s (10 ms), episode=10s
     """
     def __init__(self, params=PARAMS, control_dt=0.01, internal_dt=0.001, episode_seconds=10.0, seed=None):
+        """Create a simulator clone with paper parameters and configurable timing."""
         self.p = params.copy()
+        # Cached vector for the numba integrator; avoids repeated dict lookups.
         self.param_vec = np.array([
             self.p['M1'], self.p['M2'],
             self.p['Ixx1'], self.p['Ixx2'],
@@ -221,6 +232,7 @@ class RDIPEnv:
         ], dtype=np.float64)
         self.control_dt = control_dt
         self.h = internal_dt
+        # Number of integration sub-steps for each control decision.
         self.steps_per_action = int(round(control_dt / internal_dt))
         self.T = episode_seconds
         self.max_action = 50.0
@@ -230,11 +242,13 @@ class RDIPEnv:
         self.ep = 0  # equilibrium mode (0,1,2,3), can change per-episode
         self.x = np.zeros(6, dtype=np.float64)
         self._use_numba = _NUMBA_AVAILABLE
+        # Pick the fastest available integrator backend.
         self._rk4_impl = _rk4_numba if self._use_numba else _rk4_py
 
     # ---------- Public API ----------
     def reset(self, ep_mode=None):
-        # randomize initial state within paper's ranges (Eq. (15))
+        """Randomize state within paper ranges and optionally set the EP mode."""
+        # Randomization follows Eq. (15) ranges from the paper.
         if ep_mode is None:
             self.ep = self.rng.integers(0, 4)
         else:
@@ -252,6 +266,7 @@ class RDIPEnv:
         return self._obs()
 
     def _obs(self):
+        """Builds the augmented observation vector (Eq. (13) + context features)."""
         th, al, be, thd, ad, bd = self.x
         alpha_star, beta_star = EP_TARGETS[self.ep]
 
@@ -274,22 +289,24 @@ class RDIPEnv:
         return s
 
     def step(self, u):
-        # clamp action to [-50, 50]
+        """Advance simulation by one control step using RK4 integration."""
+        # Clamp action to actuator limits before integrating dynamics.
         u = float(np.clip(u, -self.max_action, self.max_action))
-        # integrate at 1 ms for self.steps_per_action iterations
+        # Integrate at 1 ms for `steps_per_action` iterations to emulate fast inner loop.
         for _ in range(self.steps_per_action):
             if self._use_numba:
                 self.x = self._rk4_impl(self.x, u, self.h, self.param_vec)
             else:
                 self.x = self._rk4_impl(self.x, u, self.h, self.p)
             self.t += self.h
-        # produce reward and done flag
+        # Produce shaped reward and termination flag (10 s episodes).
         r = self._reward(u)
         done = self.t >= self.T
         return self._obs(), r, done, {}
 
     # ---------- Reward (Eq. (16)) ----------
     def _reward(self, u):
+        """Shape reward identical to Eq. (16) from the paper."""
         th, al, be, thd, ad, bd = self.x
         # target angles by EP (Table 3)
         alpha_star, beta_star = EP_TARGETS[self.ep]

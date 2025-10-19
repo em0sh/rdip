@@ -44,6 +44,7 @@ def project_pendulum(theta: float, alpha: float, beta: float, params: Dict[str, 
     alpha_total = alpha
     beta_total = alpha + beta
 
+    # Compute Cartesian positions of each link endpoint relative to base.
     first_tip = arm_tip + np.array(
         [l1 * math.sin(alpha_total) * cos_t,
          l1 * math.sin(alpha_total) * sin_t,
@@ -70,6 +71,7 @@ def project_pendulum(theta: float, alpha: float, beta: float, params: Dict[str, 
 
 class InteractiveSimulator:
     def __init__(self, actor_path: Path, history_window: float = 10.0, disturbance_limit: float = 10.0):
+        """Load the TorchScript actor and prepare interactive matplotlib widgets."""
         self.actor = torch.jit.load(str(actor_path)).eval()
         self.device = torch.device("cpu")
         self.actor.to(self.device)
@@ -89,12 +91,14 @@ class InteractiveSimulator:
         self.reset_env()
 
     def _init_state_arrays(self):
+        """Reset plotting history buffers."""
         self.time_hist: List[float] = []
         self.theta_hist: List[float] = []
         self.alpha_hist: List[float] = []
         self.beta_hist: List[float] = []
 
     def _build_figure(self):
+        """Create matplotlib layout, controls, and animation loop."""
         self.fig, (self.ax_pend, self.ax_angles) = plt.subplots(1, 2, figsize=(12, 6))
         plt.subplots_adjust(left=0.08, right=0.65, bottom=0.3)
 
@@ -171,6 +175,7 @@ class InteractiveSimulator:
         )
 
     def parse_initial_state(self) -> np.ndarray:
+        """Parse TextBox input into a six-dimensional state vector."""
         state = np.zeros(6, dtype=np.float64)
         keys = ["theta", "alpha", "beta", "theta_dot", "alpha_dot", "beta_dot"]
         for i, key in enumerate(keys):
@@ -181,6 +186,7 @@ class InteractiveSimulator:
         return state
 
     def reset_env(self, custom_state: np.ndarray = None):
+        """Reset the environment, optionally injecting a user-specified state."""
         self.env.reset(ep_mode=self.target_ep)
         if custom_state is not None:
             self.env.x = custom_state.astype(np.float64)
@@ -209,6 +215,7 @@ class InteractiveSimulator:
         self.pending_disturbance += self.slider_dist.val
 
     def _append_history_sample(self):
+        """Store the latest angles and keep history bounded to history_window."""
         self.time_hist.append(self.elapsed_time)
         self.theta_hist.append(wrap_pi(self.env.x[0]))
         self.alpha_hist.append(wrap_pi(self.env.x[1]))
@@ -221,12 +228,14 @@ class InteractiveSimulator:
             self.beta_hist = self.beta_hist[-self.history_steps:]
 
     def _simulation_step(self):
+        """Run one policy step, apply optional disturbance, and log data."""
         self.env.ep = self.target_ep
         obs = self.env._obs().copy()
 
         obs_tensor = torch.from_numpy(obs).to(self.device).unsqueeze(0)
         with torch.no_grad():
             actor_out = self.actor(obs_tensor)
+        # TorchScript actor may return (action,) or (action, aux); handle both.
         if isinstance(actor_out, (tuple, list)):
             action_tensor = actor_out[0]
         else:
@@ -245,6 +254,7 @@ class InteractiveSimulator:
         self._append_history_sample()
 
     def _update_plot(self):
+        """Refresh both subplots using the latest trajectory samples."""
         theta = self.theta_hist[-1]
         alpha = self.alpha_hist[-1]
         beta = self.beta_hist[-1]

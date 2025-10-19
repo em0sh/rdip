@@ -8,6 +8,7 @@ import torch.optim as optim
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def mlp(sizes, act=nn.ReLU, out_act=nn.Identity):
+    """Construct a simple feed-forward network with configurable activations."""
     layers=[]
     for i in range(len(sizes)-1):
         layers += [nn.Linear(sizes[i], sizes[i+1]),
@@ -16,12 +17,14 @@ def mlp(sizes, act=nn.ReLU, out_act=nn.Identity):
 
 class Actor(nn.Module):
     def __init__(self, obs_dim, act_limit, hidden=256):
+        """Gaussian policy head producing tanh-squashed actions."""
         super().__init__()
         self.net = mlp([obs_dim, hidden, hidden, 2], act=nn.ReLU)  # outputs mean, log_std (2-d because action is 1-d)
         self.log_std_min, self.log_std_max = -5, 2
         self.act_limit = act_limit
 
     def forward(self, obs: torch.Tensor, deterministic: bool = False, with_logprob: bool = True):
+        """Forward pass returning sampled action and optional log-prob."""
         mu_logstd = self.net(obs)
         mu, log_std = mu_logstd[:, :1], mu_logstd[:, 1:]
         log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
@@ -49,17 +52,20 @@ class Actor(nn.Module):
 
 class QuantileCritic(nn.Module):
     def __init__(self, obs_dim, act_dim, n_quant=25, hidden=512):
+        """Critic head outputting quantile values for the TQC ensemble."""
         super().__init__()
         self.nq = n_quant
         self.q_net = mlp([obs_dim + act_dim, hidden, hidden, hidden, n_quant], act=nn.ReLU)
 
     def forward(self, obs, act):
+        """Return quantile estimates for given state-action pairs."""
         x = torch.cat([obs, act], dim=-1)
         q = self.q_net(x)  # (B, nq), quantile values
         return q
 
 class Replay:
     def __init__(self, size=1_000_000, obs_dim=10):
+        """Circular replay buffer mirroring SAC-style storage layout."""
         self.S = np.zeros((size, obs_dim), np.float32)
         self.A = np.zeros((size, 1),  np.float32)
         self.R = np.zeros((size, 1),  np.float32)
@@ -68,11 +74,13 @@ class Replay:
         self.ptr = 0; self.full=False; self.size=size
 
     def add(self, s,a,r,s2,d):
+        """Insert a single transition (s, a, r, s2, done)."""
         self.S[self.ptr]=s; self.A[self.ptr]=a; self.R[self.ptr]=r; self.S2[self.ptr]=s2; self.D[self.ptr]=d
         self.ptr = (self.ptr+1)%self.size
         if self.ptr==0: self.full=True
 
     def sample(self, batch):
+        """Random minibatch with tensors located on the active DEVICE."""
         n = self.size if self.full else self.ptr
         idx = np.random.randint(0, n, size=batch)
         return (
@@ -89,6 +97,7 @@ class Replay:
 class TQC:
     def __init__(self, obs_dim=10, act_limit=50.0, gamma=0.99, lr=3e-4,
                  n_quant=25, n_critics=2, truncate_top_frac=0.1, tau=0.005, target_entropy=-1.0):
+        """Implementation of Truncated Quantile Critics (TQC) for 1-D torque control."""
         self.act_limit=act_limit
         self.gamma=gamma
         self.tau=tau
@@ -101,6 +110,7 @@ class TQC:
         self.critics_tgt=nn.ModuleList([QuantileCritic(obs_dim, 1, n_quant) for _ in range(n_critics)]).to(DEVICE)
         self.critics_tgt.load_state_dict(self.critics.state_dict())
 
+        # Separate optimizers for actor and critic ensemble.
         self.pi_opt=optim.Adam(self.actor.parameters(), lr=lr)
         self.q_opt=optim.Adam(self.critics.parameters(), lr=lr)
 
@@ -110,23 +120,28 @@ class TQC:
         self.target_entropy = target_entropy
 
         # fixed quantile fractions (uniform)
+        # Fixed quantile fractions with uniform spacing between 0 and 1.
         taus = (torch.arange(self.nq, device=DEVICE, dtype=torch.float32)+0.5)/self.nq
         self.taus = taus.view(1, self.nq)  # (1, nq)
 
     @torch.no_grad()
     def act(self, obs, deterministic=False):
+        """Policy inference helper that returns a NumPy action."""
         obs = torch.as_tensor(obs, device=DEVICE).unsqueeze(0)
         a, _ = self.actor(obs, deterministic=deterministic, with_logprob=False)
         return a.squeeze(0).cpu().numpy()
 
     def _soft_update(self, net, tgt):
+        """Polyak-average parameters into the target network."""
         for p, tp in zip(net.parameters(), tgt.parameters()):
             tp.data.mul_(1-self.tau).add_(self.tau*p.data)
 
     def _huber(self, x, k=1.0):
+        """Differentiable Huber loss used inside the quantile regression term."""
         return torch.where(x.abs()<=k, 0.5*x.pow(2), k*(x.abs()-0.5*k))
 
     def train_step(self, replay: Replay, batch=256):
+        """Run one gradient step for critics, actor, and entropy temperature."""
         S,A,R,S2,D = replay.sample(batch)
 
         # ------- Critic update (distributional quantile regression + truncation) -------
@@ -144,6 +159,7 @@ class TQC:
             # sort and drop largest top-k quantiles
             tq_sorted, _ = torch.sort(tq, dim=1)
             total_quants = tq_sorted.shape[1]
+            # Drop the highest quantiles across the ensemble as per TQC.
             drop_per = max(1, int(math.floor(self.trunc_frac * self.nq)))
             drop = min(total_quants - 1, drop_per * self.n_critics)
             tq_kept = tq_sorted[:, :total_quants-drop]
@@ -161,7 +177,7 @@ class TQC:
             u = y - q  # TD error per quantile
             # taus shape (1,nq) -> (B,nq)
             taus = self.taus.expand_as(q)
-            delta = (u < 0.0).float()
+            delta = (u < 0.0).float()  # indicator for asymmetric quantile weighting
             quantile_weight = torch.abs(taus - delta)
             loss = (quantile_weight * self._huber(u)).mean()
             q_loss = q_loss + loss
@@ -186,6 +202,7 @@ class TQC:
         # temperature
         # Temperature update (SAC-style); pushes entropy toward target_entropy
         logp_detached = logp.detach()
+        # Encourage entropy toward the desired target (SAC temperature update).
         alpha_loss = -(self.log_alpha * (logp_detached + self.target_entropy)).mean()
         self.a_opt.zero_grad()
         alpha_loss.backward()

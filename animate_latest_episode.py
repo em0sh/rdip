@@ -8,6 +8,7 @@ from matplotlib.animation import FuncAnimation
 
 
 def load_episode(path: Path):
+    """Load a saved rollout (.npz) and normalize optional fields."""
     data = np.load(path, allow_pickle=True)
     states = data["state"]
     times = data["time"]
@@ -35,10 +36,12 @@ def load_episode(path: Path):
 
 
 def wrap_pi_array(arr):
+    """Vectorized angle wrapping helper."""
     return (arr + np.pi) % (2 * np.pi) - np.pi
 
 
 def compute_geometry(states, params):
+    """Convert state trajectory into projected coordinates for plotting."""
     L1 = params.get("L1", 0.16)
     l1 = params.get("l1", 0.07)
     l2 = params.get("l2", 0.13)
@@ -54,16 +57,19 @@ def compute_geometry(states, params):
     base = np.zeros((len(theta), 3))
     arm_tip = np.stack([L1 * cos_t, L1 * sin_t, np.zeros_like(theta)], axis=1)
 
+    # First link: offset from the rotating arm by alpha.
     horiz1 = l1 * np.sin(alpha_raw)
     vert1 = l1 * np.cos(alpha_raw)
     first_tip = arm_tip + np.stack([horiz1 * cos_t, horiz1 * sin_t, vert1], axis=1)
 
+    # Second link angle includes alpha + beta as defined in the paper.
     total_second = alpha_raw + beta
     horiz2 = l2 * np.sin(total_second)
     vert2 = l2 * np.cos(total_second)
     second_tip = first_tip + np.stack([horiz2 * cos_t, horiz2 * sin_t, vert2], axis=1)
 
     # Simple oblique projection to 2D (rotate around vertical axis)
+    # Fixed oblique viewing angle for the simple 3D→2D projection.
     view_yaw = np.deg2rad(30)
     c, s = np.cos(view_yaw), np.sin(view_yaw)
 
@@ -82,12 +88,14 @@ def compute_geometry(states, params):
     s_coords = np.stack([base_s, arm_s, first_s, second_s], axis=1)
     z_coords = np.stack([base_z, arm_z, first_z, second_z], axis=1)
 
+    # Shift alpha by 90° so the trace aligns with the paper's visualizations.
     alpha_plot = wrap_pi_array(alpha_raw + (np.pi / 2.0))
 
     return s_coords, z_coords, theta, alpha_plot, beta
 
 
 def animate_episode(path: Path):
+    """Animate a single episode using Matplotlib's FuncAnimation."""
     info = load_episode(path)
     states = info["states"]
     if len(states) == 0:
@@ -164,6 +172,7 @@ def animate_episode(path: Path):
 
 
 def wait_for_new_file(path: Path, last_mtime: float, poll: float = 1.0):
+    """Block until the file timestamp changes."""
     while True:
         time.sleep(poll)
         if not path.exists():
@@ -204,6 +213,7 @@ def main():
     episode_path = args.path
 
     if episode_path is None:
+        # Resolve which episode file to visualize based on CLI arguments.
         run_dir = args.run
         if run_dir is None:
             if not runs_dir.exists():
@@ -228,6 +238,7 @@ def main():
         raise FileNotFoundError(f"{episode_path} does not exist. Run training first.")
 
     while True:
+        # Draw once, optionally wait on disk changes if --loop is active.
         mtime = episode_path.stat().st_mtime
         print(f"Animating {episode_path} (mtime={mtime})")
         animate_episode(episode_path)

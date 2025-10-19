@@ -14,6 +14,7 @@ from tqc import DEVICE, Replay, TQC
 
 
 def train(total_steps=5_000_000, seed=0):
+    """Main training entry point that orchestrates actors, envs, and logging."""
     print(f"[train] Device: {DEVICE}")
 
     # Instantiate a probe environment to read constants and act_limit
@@ -29,10 +30,11 @@ def train(total_steps=5_000_000, seed=0):
     writer = SummaryWriter(log_dir=str(run_dir))
     print(f"[train] Logging TensorBoard data to {run_dir}")
 
+    # Warm-up with purely random actions before switching to policy rollouts.
     start_ep_steps = 10_000
     warmup_remaining = start_ep_steps
-    batch = 256
-    updates_per_step = 1
+    batch = 256  # default SAC batch size
+    updates_per_step = 1  # gradient updates per environment step
 
     # Determine how many environments to run in parallel
     cpu_count = os.cpu_count() or 1
@@ -40,27 +42,30 @@ def train(total_steps=5_000_000, seed=0):
     num_envs = max_envs if DEVICE.type == "cuda" and max_envs > 1 else 1
     print(f"[train] Parallel environments: {num_envs}")
 
+    # Launch a small vector of environments for decorrelated rollouts.
     envs = [probe_env] + [RDIPEnv(seed=seed + (i + 1) * 1000) for i in range(num_envs - 1)]
     obs_list = []
     episode_times = [[] for _ in range(num_envs)]
-    episode_states = [[] for _ in range(num_envs)]
-    episode_actions = [[] for _ in range(num_envs)]
-    episode_rewards = [[] for _ in range(num_envs)]
-    episode_modes = []
+    episode_states = [[] for _ in range(num_envs)]  # raw state trace for saving to disk
+    episode_actions = [[] for _ in range(num_envs)]  # scalar torques per step
+    episode_rewards = [[] for _ in range(num_envs)]  # shaped reward per step
+    episode_modes = []  # track which equilibrium each env was tasked with
     ep_returns = np.zeros(num_envs, dtype=np.float64)
     ep_start_times = [time.time() for _ in range(num_envs)]
     ep = 0
     ema_ret = None
     ema_beta = 0.05
     total_ep_time = 0.0
-    mode_counts = defaultdict(int)
-    mode_return_totals = defaultdict(float)
+    mode_counts = defaultdict(int)  # how often each EP has been attempted
+    mode_return_totals = defaultdict(float)  # cumulative return per EP
     stats = None
 
+    # Mode weights allow biasing sampling toward specific equilibria if needed.
     mode_weights = np.ones(4, dtype=np.float64)
     mode_weights /= mode_weights.sum()
 
     def weighted_mode(rng: np.random.Generator) -> int:
+        """Sample an EP index using the mutable mode weight vector."""
         return int(rng.choice(4, p=mode_weights))
 
     for idx, env in enumerate(envs):
@@ -72,6 +77,7 @@ def train(total_steps=5_000_000, seed=0):
     total_steps = 0
     latest_episode_path = run_dir / "latest_episode.npz"
 
+    # Thread pool lets us step vector environments without serial bottleneck.
     executor = ThreadPoolExecutor(max_workers=num_envs) if num_envs > 1 else None
 
     try:
@@ -82,6 +88,7 @@ def train(total_steps=5_000_000, seed=0):
             actions = []
             for idx in range(active_envs):
                 env = envs[idx]
+                # Log raw simulator state so we can replay the full trajectory later.
                 episode_times[idx].append(env.t)
                 episode_states[idx].append(env.x.copy())
                 if warmup_remaining > 0:
@@ -110,6 +117,7 @@ def train(total_steps=5_000_000, seed=0):
                     next_obs, reward, done, _ = env.step(action_scalars[idx])
 
                 episode_rewards[idx].append(reward)
+                # Replay buffer stores every transition for off-policy updates.
                 buf.add(obs_list[idx], actions[idx], reward, next_obs, float(done))
                 obs_list[idx] = next_obs
                 ep_returns[idx] += reward
@@ -190,6 +198,7 @@ def train(total_steps=5_000_000, seed=0):
             if total_steps >= steps_goal:
                 break
 
+            # Once replay is primed, alternate rollouts with gradient updates.
             if warmup_remaining <= 0 and len(buf) >= batch:
                 updates_to_run = updates_per_step
                 for _ in range(updates_to_run):
@@ -200,6 +209,7 @@ def train(total_steps=5_000_000, seed=0):
                         writer.add_scalar("train/alpha", stats["alpha"], total_steps)
                         writer.add_scalar("train/entropy", stats["entropy"], total_steps)
                         writer.add_scalar("train/log_prob", stats["logp"], total_steps)
+        # Export the latest actor as TorchScript so it can run outside Python.
         actor = algo.actor.cpu().eval()
         scripted = torch.jit.script(actor)
         timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -213,4 +223,5 @@ def train(total_steps=5_000_000, seed=0):
 
 
 if __name__ == "__main__":
+    # Provide the paper's training length as the default CLI invocation.
     train(total_steps=6_500_000, seed=42)
