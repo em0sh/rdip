@@ -16,7 +16,7 @@ This project recreates the **“Sim-to-Real Reinforcement Learning for a Rotary 
 - `train_rdip_tqc.py`: main training loop (PyTorch); spins up 1–16 simulators, warms up with random actions, logs to TensorBoard, and stores per-episode rollouts.
 - `rdip_env.py`: rotary double-inverted pendulum simulator derived directly from the paper (17-D observation, actions are θ̈ in ±50 rad/s², 10 s episodes, Eq. (16) reward).
 - `tqc.py`: Truncated Quantile Critics implementation (actor, critic ensemble, replay buffer, SAC-style temperature tuning).
-- `animate_latest_episode.py`: visualizes saved episodes as 2D animations (pendulum projection + angle traces).
+- `tests/animate_latest_episode.py`: visualizes saved episodes as 2D animations (pendulum projection + angle traces).
 - `interactive_sim.py`: interactive viewer for TorchScript actors with disturbance injection and manual state resets.
 
 The instructions below walk through installation, running training, monitoring progress, animating episodes, using the interactive simulator, and using the exported actors (`rdip_tqc_actor_<timestamp>.pt`).
@@ -94,7 +94,7 @@ Use the animation helper to replay a specific episode:
 ```bash
 source .venv/bin/activate
 # Point MPLCONFIGDIR to a writable cache if Matplotlib complains about ~/.matplotlib
-MPLCONFIGDIR=/tmp/matplotlib python animate_latest_episode.py \
+MPLCONFIGDIR=/tmp/matplotlib python tests/animate_latest_episode.py \
     --run runs/TQC_20251012-231308_seed42 \
     --episode 5
 ```
@@ -170,11 +170,11 @@ If you wish to keep multiple checkpoints, simply keep the timestamped `.pt` file
 ## 6. Interactive Simulation
 ![Simulator](sim.png)
 
-Use `interactive_sim.py` to explore trained policies with visual feedback and disturbance injection:
+Use `tests/interactive_sim.py` to explore trained policies with visual feedback and disturbance injection:
 
 ```bash
 source .venv/bin/activate
-python interactive_sim.py --actor rdip_tqc_actor_<timestamp>.pt
+python tests/interactive_sim.py --actor rdip_tqc_actor_<timestamp>.pt
 ```
 
 Highlights:
@@ -187,7 +187,7 @@ Highlights:
 If Matplotlib complains about cache directories, set `MPLCONFIGDIR`, e.g.:
 
 ```bash
-MPLCONFIGDIR=/tmp/mpl python interactive_sim.py --actor rdip_tqc_actor_<timestamp>.pt
+MPLCONFIGDIR=/tmp/mpl python tests/interactive_sim.py --actor rdip_tqc_actor_<timestamp>.pt
 ```
 
 The simulator assumes the TorchScript actor's first return value is the action tensor; adjust `_simulation_step` if your export has a different signature.

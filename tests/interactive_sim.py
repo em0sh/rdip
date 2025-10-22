@@ -1,7 +1,7 @@
 """Interactive RDIP policy viewer.
 
 Usage:
-    python interactive_sim.py --actor rdip_tqc_actor.pt
+    python tests/interactive_sim.py --actor rdip_tqc_actor.pt
 
 Left subplot: rotary double inverted pendulum (projected 3D view)
 Right subplot: angle traces over time (last N seconds)
