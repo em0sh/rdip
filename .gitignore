@@ -11,6 +11,9 @@ __pycache__/
 .idea/
 .vscode/
 
+# Local configuration specific folders and files
+COTS/
+
 # Logs and checkpoints
 runs/
 *.tfevents*

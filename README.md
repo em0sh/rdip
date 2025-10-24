@@ -4,7 +4,7 @@ This is an implementation of "Sim-to-Real Reinforcement Learning for a Rotary Do
 All hardware design and software was done from scratch independent of the researchers.
 
 # Hardware
-![Current State of Hardware Design](CAD.png)
+![Current State of Hardware Design](media/CAD.png)
 
 # CAD
 The CAD of the assembly is stored in a single .STP file in the CAD/ directory.
@@ -17,7 +17,10 @@ This project recreates the **“Sim-to-Real Reinforcement Learning for a Rotary 
 - `rdip_env.py`: rotary double-inverted pendulum simulator derived directly from the paper (17-D observation, actions are θ̈ in ±50 rad/s², 10 s episodes, Eq. (16) reward).
 - `tqc.py`: Truncated Quantile Critics implementation (actor, critic ensemble, replay buffer, SAC-style temperature tuning).
 - `tests/animate_latest_episode.py`: visualizes saved episodes as 2D animations (pendulum projection + angle traces).
-- `interactive_sim.py`: interactive viewer for TorchScript actors with disturbance injection and manual state resets.
+- `tests/interactive_sim.py`: interactive viewer for TorchScript actors with disturbance injection and manual state resets.
+- `io/io_dsy.py`: Modbus helper for DSY-RS servo drives (zeroing, jog, status).
+- `runtime/runtime_actor.py`: optimized TorchScript wrapper for deployment targets.
+- `runtime/runtime.py`: production control loop for hardware or simulated runs.
 
 The instructions below walk through installation, running training, monitoring progress, animating episodes, using the interactive simulator, and using the exported actors (`rdip_tqc_actor_<timestamp>.pt`).
 
@@ -168,7 +171,7 @@ If you wish to keep multiple checkpoints, simply keep the timestamped `.pt` file
 ---
 
 ## 6. Interactive Simulation
-![Simulator](sim.png)
+![Simulator](media/sim.png)
 
 Use `tests/interactive_sim.py` to explore trained policies with visual feedback and disturbance injection:
 
@@ -191,3 +194,46 @@ MPLCONFIGDIR=/tmp/mpl python tests/interactive_sim.py --actor rdip_tqc_actor_<ti
 ```
 
 The simulator assumes the TorchScript actor's first return value is the action tensor; adjust `_simulation_step` if your export has a different signature.
+
+---
+
+## 7. Runtime Deployment (RPi / Embedded)
+
+The `runtime/` directory hosts the deployment stack:
+
+- `runtime/runtime_actor.py`: loads and optimizes the TorchScript actor for low-latency inference and exposes helpers to build the 17‑D observation from encoder data.
+- `runtime/runtime.py`: production entrypoint that can either run against real hardware (encoders/motor driver stubs included) or simulate the loop end-to-end by toggling `--simulate`.
+
+Example hardware usage (Modbus over RS-485):
+
+```bash
+python runtime/runtime.py \n    --actor rdip_tqc_actor_<timestamp>.pt \n    --drive-port /dev/ttyUSB0 \n    --drive-unit 1 \n    --loop-hz 200 \n    --zero \n    --verbose
+```
+
+Important flags:
+
+- `--drive-port /dev/ttyUSBx`: serial device wired to the DSY-RS drive (omit to stay in simulation).
+- `--drive-unit`: Modbus slave ID (default `1`).
+- `--drive-counts`: encoder counts-per-rev reported by your motor (default `131072`).
+- `--drive-sim`: force the software drive/encoder emulator even in hardware mode.
+- `--zero`: run the incremental encoder zeroing routine before the control loop starts.
+- `--verbose`: stream per-second summaries showing `Δθ_step`, `Δθ_interval`, the latest torque command, latency stats, and the measured encoder angle.
+
+Simulation smoke test:
+
+```bash
+python runtime/runtime.py --actor rdip_tqc_actor_<timestamp>.pt --simulate --duration 5 --verbose
+```
+
+By default the process pins itself to CPU0 for improved determinism; disable with `--no-affinity` if your platform does not support processor affinity.
+
+### DSY drive utility (`io/io_dsy.py`)
+
+Quick checks and manual jogs can be issued directly:
+
+```bash
+python -m io.io_dsy --port /dev/ttyUSB0 --zero
+python -m io.io_dsy --port /dev/ttyUSB0 --motormove 15 --status
+```
+
+Pass `--simulate` to the helper when developing without hardware.
