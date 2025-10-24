@@ -143,12 +143,11 @@ class DsyDrive:
         if self.simulate:
             return self._simulate_position * self.counts_per_rev / (2.0 * math.pi)
         assert self._instrument is not None, "Drive not connected"
-        # P18.07 is 32-bit signed
-        return float(
-            self._instrument.read_long(
-                self.position_register, functioncode=3, signed=True
-            )
+        raw = self._instrument.read_long(
+            self.position_register, functioncode=3, signed=False
         )
+        # Normalize to unsigned 32-bit space to avoid wrap sign flips.
+        return float(raw & 0xFFFFFFFF)
 
     def _read_speed_rpm(self) -> float:
         if self.simulate:
@@ -162,8 +161,11 @@ class DsyDrive:
 
     def read_position_rad(self) -> float:
         counts = self._read_position_counts()
+        counts -= self._zero_offset_counts
+        if counts > 0x80000000:
+            counts -= 0x100000000
         self._position_counts = counts
-        angle = (counts - self._zero_offset_counts) * (2.0 * math.pi) / self.counts_per_rev
+        angle = counts * (2.0 * math.pi) / self.counts_per_rev
         return angle
 
     def read_position_deg(self) -> float:
@@ -219,17 +221,10 @@ class DsyDrive:
             return
         counts_delta = int(round(delta_rad * self.counts_per_rev / (2.0 * math.pi)))
         assert self._instrument is not None, "Drive not connected"
-        try:
-            self._instrument.write_long(
-                self.relative_move_register, counts_delta, functioncode=16
-            )
-        except AttributeError:
-            # minimalmodbus<2.0 lacks write_long; fallback to two registers
-            high = (counts_delta >> 16) & 0xFFFF
-            low = counts_delta & 0xFFFF
-            self._instrument.write_registers(
-                self.relative_move_register, [high, low], functioncode=16
-            )
+        low = counts_delta & 0xFFFF
+        high = (counts_delta >> 16) & 0xFFFF
+        payload = [low, high]
+        self._instrument.write_registers(self.relative_move_register, payload)
 
     # ---------------------------------------------------------------------- #
     # Homing / zeroing
@@ -350,4 +345,3 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
-

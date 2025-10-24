@@ -2,9 +2,9 @@
 """
 DSY-RS drive (Modbus RTU over USB-RS485):
 - Position mode
-- Internal multi-segment position
+- Internal multi-segment position (incremental displacements)
 - 1 unit = 1 degree (P04.05 = 360)
-- Segment: +180°, dwell, then -180° (return to 0°)
+- Segment 1: +180° move relative to current, dwell, then −180° back
 - Works across pymodbus 3.x variants by adapting unit/slave handling.
 
 If anything fails, a clear exception is printed.
@@ -61,7 +61,8 @@ DI2_MASK = 0x0002
 # Optional sanity reads
 P1000 = 2560             # P10.00 (comm address)
 P1801 = 4609             # P18.01 (speed feedback)
-
+P1807 = 4615             # P18.07 (absolute position, 32-bit signed)
+P0901 = 2305             # P09.01 (fault / error code register, 16-bit)
 def die(msg): print(msg, file=sys.stderr); sys.exit(1)
 
 def make_client():
@@ -140,9 +141,59 @@ def reader16(client, addr, n, call_kw):
         rr = chk(client.read_holding_registers(address=addr, count=n))
     return rr.registers
 
+def reader32s(client, addr, call_kw, *, word_order="lohi"):
+    regs = reader16(client, addr, 2, call_kw)
+    if word_order == "hilo":
+        hi, lo = regs
+    else:
+        lo, hi = regs
+    value = (hi << 16) | lo
+    if value & 0x80000000:
+        value -= 0x100000000
+    return value
+
 def deg_to_units(deg, units_per_rev=UNITS_PER_REV):
 
     return int(round((units_per_rev * deg) / 360.0))
+
+def units_to_deg(units, units_per_rev=UNITS_PER_REV):
+    return (units / units_per_rev) * 360.0
+
+def bcd16_to_int(value):
+    digits = [(value >> shift) & 0xF for shift in (12, 8, 4, 0)]
+    if any(d > 9 for d in digits):
+        return None
+    return digits[0] * 1000 + digits[1] * 100 + digits[2] * 10 + digits[3]
+
+def read_encoder_state(client, call_kw, units_per_rev):
+    pos_units = reader32s(client, P1807, call_kw)
+    pos_deg = units_to_deg(pos_units, units_per_rev)
+    print(f"Encoder position: {pos_units} units ({pos_deg:.2f}°)")
+    return pos_units, pos_deg
+
+def read_error_code(client, call_kw):
+    try:
+        raw = reader16(client, P0901, 1, call_kw)
+    except Exception as exc:
+        print(f"Failed to read P09.01 error code: {exc}")
+        return None
+    if not raw:
+        print("P09.01 read returned no registers.")
+        return None
+    value = raw[0]
+    signed = value if value < 0x8000 else value - 0x10000
+    bcd = bcd16_to_int(value)
+    print(f"P09.01 error code raw: 0x{value:04X}")
+    print(f"P09.01 error code unsigned: {value}")
+    print(f"P09.01 error code signed: {signed}")
+    if bcd is not None:
+        print(f"P09.01 error code BCD: {bcd:04d}")
+    return {
+        "raw": value,
+        "unsigned": value,
+        "signed": signed,
+        "bcd": bcd,
+    }
 
 def set_psec_level(client, call_kw, base_mask, enable):
     mask = base_mask | (DI2_MASK if enable else 0)
@@ -202,8 +253,7 @@ def run_profile():
 
         # ---- Servo ON baseline ----
         base_mask = DI1_MASK
-        writer16(client, P1111, base_mask, strat['call_kw'])
-        forced_di_active = True
+        read_encoder_state(client, strat['call_kw'], units_per_rev)
 
         # ---- Program segment 1: +180°, dwell ----
         writer32s(client, P1308, deg_to_units(MOVE_DEG, units_per_rev), strat['call_kw'])
@@ -219,8 +269,9 @@ def run_profile():
         set_psec_level(client, strat['call_kw'], base_mask, True)
         time.sleep(2.0)
         set_psec_level(client, strat['call_kw'], base_mask, False)
+        read_encoder_state(client, strat['call_kw'], units_per_rev)
 
-        # ---- Program segment 1: −180° (return), no extra dwell ----
+        # ---- Program segment 1: -180° (return), no extra dwell ----
         writer32s(client, P1308, -deg_to_units(MOVE_DEG, units_per_rev), strat['call_kw'])
         # DIAG:
         check = reader16(client, P1308, 2, strat['call_kw'])
@@ -232,6 +283,7 @@ def run_profile():
         set_psec_level(client, strat['call_kw'], base_mask, True)
         time.sleep(2.0)
         set_psec_level(client, strat['call_kw'], base_mask, False)
+        read_encoder_state(client, strat['call_kw'], units_per_rev)
 
         # Optional feedback
         try:
@@ -256,9 +308,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Drive the DSY-RS internal multi-segment move.")
     parser.add_argument("--reset", action="store_true",
                         help="Send a P11.01 fault-reset pulse and exit.")
+    parser.add_argument("--error", action="store_true",
+                        help="Read the current drive error/alarm code (P09.01) and exit.")
     args = parser.parse_args()
 
-    if args.reset:
+    if args.reset or args.error:
         print("pymodbus version:", pymodbus.__version__)
         client = make_client()
         if not client.connect():
@@ -266,20 +320,23 @@ if __name__ == "__main__":
         try:
             strat = detect_unit_strategy(client, SLAVEID)
             print(f"Per-call kw: {strat['call_kw']}, client attr set: {strat['set_attr']}")
-            try:
-                addr_echo = reader16(client, P1000, 1, strat['call_kw'])[0]
-                print(f"P10.00 (drive address) reads: {addr_echo}")
-            except Exception as e:
-                print(f"Warning: could not read P10.00: {e}")
+            if args.reset:
+                try:
+                    addr_echo = reader16(client, P1000, 1, strat['call_kw'])[0]
+                    print(f"P10.00 (drive address) reads: {addr_echo}")
+                except Exception as e:
+                    print(f"Warning: could not read P10.00: {e}")
 
-            print("Ensuring S-ON is OFF before issuing fault reset is recommended.")
-            writer16(client, P1110, 1, strat['call_kw'])
-            writer16(client, P1111, 0, strat['call_kw'])
-            time.sleep(0.05)
-            writer16(client, P1101, 1, strat['call_kw'])
-            time.sleep(0.05)
-            writer16(client, P1101, 0, strat['call_kw'])
-            print("Fault reset command sent (P11.01 pulse).")
+                print("Ensuring S-ON is OFF before issuing fault reset is recommended.")
+                writer16(client, P1110, 1, strat['call_kw'])
+                writer16(client, P1111, 0, strat['call_kw'])
+                time.sleep(0.05)
+                writer16(client, P1101, 1, strat['call_kw'])
+                time.sleep(0.05)
+                writer16(client, P1101, 0, strat['call_kw'])
+                print("Fault reset command sent (P11.01 pulse).")
+            if args.error:
+                read_error_code(client, strat['call_kw'])
         finally:
             client.close()
     else:
