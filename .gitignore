@@ -20,5 +20,3 @@ runs/
 
 # Misc
 sync.sh
-
-# Ignore generated docs or temporary files here if needed
