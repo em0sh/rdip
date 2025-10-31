@@ -3,11 +3,11 @@ This is an implementation of "Sim-to-Real Reinforcement Learning for a Rotary Do
 
 All hardware design and software was done from scratch independent of the researchers.
 
-# Hardware
-![Current State of Hardware Design](media/CAD.png)
+# Hardware - Revision 0
+![Revision 0 Hardware](media/CAD.png)
 
 # CAD
-The CAD of the assembly is stored in a single .STP file in the CAD/ directory.
+Git doesn't support files greater than 100 MB without LFS, so the STEP file in the CAD directory is split into multiple files that you need to import piecemeal. 
 
 # RDIP TQC Training
 
